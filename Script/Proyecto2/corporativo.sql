@@ -64,7 +64,7 @@ ALTER TABLE Warehouse.StockItems SET (SYSTEM_VERSIONING = OFF)
 ALTER TABLE Warehouse.StockItems DROP PERIOD FOR SYSTEM_TIME
 GO
 
--- Valores por defecto para las columnas de versionado temporal, que ya no se usan en el Corporativo
+-- Valores por defecto para ValidFrom y ValidTo: ya no las llena SQL Server, y sin esto los INSERT de los SPs fallarían
 ALTER TABLE Application.Cities ADD CONSTRAINT DF_Cities_ValidFrom DEFAULT SYSUTCDATETIME() FOR ValidFrom, CONSTRAINT DF_Cities_ValidTo DEFAULT '9999-12-31 23:59:59.9999999' FOR ValidTo
 ALTER TABLE Application.Countries ADD CONSTRAINT DF_Countries_ValidFrom DEFAULT SYSUTCDATETIME() FOR ValidFrom, CONSTRAINT DF_Countries_ValidTo DEFAULT '9999-12-31 23:59:59.9999999' FOR ValidTo
 ALTER TABLE Application.DeliveryMethods ADD CONSTRAINT DF_DeliveryMethods_ValidFrom DEFAULT SYSUTCDATETIME() FOR ValidFrom, CONSTRAINT DF_DeliveryMethods_ValidTo DEFAULT '9999-12-31 23:59:59.9999999' FOR ValidTo
@@ -202,4 +202,178 @@ UNION ALL SELECT 'Movimientos de inventario (compras)', COUNT(*) FROM Warehouse.
 SELECT COL_LENGTH('Sales.Customers', 'PhoneNumber') AS cliente_telefono,
        COL_LENGTH('Purchasing.Suppliers', 'BankAccountNumber') AS proveedor_cuenta,
        COL_LENGTH('Application.People', 'EmailAddress') AS persona_email
+GO
+
+
+---------- Seguridad y Cifrado de Contraseñas ----------
+
+
+-- Confirmar en que BD vamos a trabajar
+USE WWI_Corporativo
+GO
+SELECT @@SERVERNAME AS servidor, DB_NAME() AS base_de_datos
+GO
+
+/* 
+   Jerarquía de cifrado: master key -> certificado -> llave
+   KEY_SOURCE e IDENTITY_VALUE son los "secretos compartidos": al usar
+   los MISMOS en los 3 nodos, la llave simétrica queda Idéntica en todos
+   y una contraseña cifrada en el Corporativo se puede descifrar en las
+   sucursales. Según Microsoft Learn: Create identical symmetric keys on two servers.
+*/
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'MasterKey_Corporativo*2026'
+GO
+
+CREATE CERTIFICATE CertificadoUsuarios
+WITH SUBJECT = 'Proteccion de contrasenas de usuarios'
+GO
+
+CREATE SYMMETRIC KEY LlaveUsuarios
+WITH ALGORITHM = AES_256,
+     KEY_SOURCE = 'WWI Proyecto 2 - fuente de la llave de usuarios',
+     IDENTITY_VALUE = 'WWI Proyecto 2 - identidad de la llave de usuarios'
+ENCRYPTION BY CERTIFICATE CertificadoUsuarios
+GO
+
+/*
+   Tabla de usuarios del sistema
+   El ID sale de una secuencia, igual que en el resto de WWI.
+*/
+CREATE SEQUENCE Sequences.UsuarioID AS int START WITH 1 INCREMENT BY 1
+GO
+
+CREATE TABLE dbo.Usuarios (
+  iduser int NOT NULL CONSTRAINT DF_Usuarios_iduser DEFAULT (NEXT VALUE FOR Sequences.UsuarioID),
+  username nvarchar(50) NOT NULL,
+  password varbinary(256) NOT NULL, -- contraseña cifrada con LlaveUsuarios
+  fullname nvarchar(100) NOT NULL,
+  active bit NOT NULL CONSTRAINT DF_Usuarios_active DEFAULT 1,
+  rol nvarchar(20) NOT NULL,
+  email nvarchar(100) NULL,
+  hiredate date NOT NULL,
+  sucursal nvarchar(20) NULL, -- SanJose/Limon para Administrador, NULL para Corporativo
+  CONSTRAINT PK_Usuarios PRIMARY KEY (iduser),
+  CONSTRAINT UQ_Usuarios_username UNIQUE (username),
+  CONSTRAINT CK_Usuarios_rol CHECK (rol IN ('Administrador', 'Corporativo')),
+  CONSTRAINT CK_Usuarios_sucursal CHECK (
+       (rol = 'Administrador' AND sucursal IN ('SanJose', 'Limon'))
+    OR (rol = 'Corporativo' AND sucursal IS NULL))
+)
+GO
+
+-- Stored procedures de usuarios
+
+/*
+  CrearUsuario: registra un usuario con la contraseña cifrada.
+  Solo existe en el Corporativo (dueño del catálogo de usuarios);
+  la replicación lo lleva a las sucursales.
+*/
+CREATE OR ALTER PROCEDURE dbo.CrearUsuario
+  @username nvarchar(50),
+  @password nvarchar(100),
+  @fullname nvarchar(100),
+  @rol nvarchar(20),
+  @email nvarchar(100) = NULL,
+  @hiredate date,
+  @sucursal nvarchar(20) = NULL
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+  SET XACT_ABORT ON
+  BEGIN TRY
+    BEGIN TRANSACTION
+
+    IF EXISTS (SELECT 1 FROM dbo.Usuarios WHERE username = @username)
+    BEGIN
+      THROW 50030, 'Ya existe un usuario con ese nombre', 1
+    END
+
+    OPEN SYMMETRIC KEY LlaveUsuarios DECRYPTION BY CERTIFICATE CertificadoUsuarios
+
+    INSERT INTO dbo.Usuarios (username, password, fullname, rol, email, hiredate, sucursal)
+    VALUES (@username,
+            EncryptByKey(Key_GUID('LlaveUsuarios'), @password),
+            @fullname, @rol, @email, @hiredate, @sucursal)
+
+    CLOSE SYMMETRIC KEY LlaveUsuarios
+
+    COMMIT TRANSACTION
+    SELECT iduser, username, rol, sucursal FROM dbo.Usuarios WHERE username = @username
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0
+      ROLLBACK TRANSACTION
+    SELECT
+      ERROR_NUMBER() AS NumeroError,
+      ERROR_MESSAGE() AS MensajeError,
+      ERROR_LINE() AS LineaError
+  END CATCH
+END
+GO
+
+/*
+  ValidarUsuario: login del rol Corporativo.
+  Devuelve 1 fila si el usuario y la contraseña son correctos, 0 si no.
+  La contraseña nunca sale de la base de datos: se compara aquí adentro.
+*/
+CREATE OR ALTER PROCEDURE dbo.ValidarUsuario
+  @username nvarchar(50),
+  @password nvarchar(100)
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+  OPEN SYMMETRIC KEY LlaveUsuarios DECRYPTION BY CERTIFICATE CertificadoUsuarios
+
+  SELECT iduser, username, fullname, rol, email, sucursal
+  FROM dbo.Usuarios
+  WHERE username = @username
+    -- COLLATE ..._CS_AS hace que distinga mayúsculas de minúsculas
+    AND CONVERT(nvarchar(100), DecryptByKey(password)) = @password COLLATE Latin1_General_100_CS_AS
+    AND active = 1
+    AND rol = 'Corporativo'
+
+  CLOSE SYMMETRIC KEY LlaveUsuarios
+END
+GO
+
+/*
+   Login de la API para el rol Corporativo
+   Solo puede ejecutar stored procedures, nunca leer tablas.
+*/
+CREATE LOGIN api_corporativo
+WITH PASSWORD = 'ApiCorp*2026', CHECK_POLICY = OFF, DEFAULT_DATABASE = WWI_Corporativo
+GO
+
+CREATE USER api_corporativo FOR LOGIN api_corporativo
+CREATE ROLE rol_corporativo
+ALTER ROLE rol_corporativo ADD MEMBER api_corporativo
+GRANT EXECUTE ON dbo.ValidarUsuario TO rol_corporativo
+GO
+
+-- Pruebas
+
+-- Usuario de prueba
+EXEC dbo.CrearUsuario
+  @username = 'prueba', @password = 'Prueba*123', @fullname = 'Usuario de Prueba',
+  @rol = 'Corporativo', @email = 'prueba@wwi.com', @hiredate = '2026-11-02'
+
+-- Así queda guardada la contraseña (cifrada, ilegible)
+SELECT iduser, username, password FROM dbo.Usuarios
+
+-- Login: correcto (1 fila), contraseña mala (0 filas), mayúsculas distintas (0 filas)
+EXEC dbo.ValidarUsuario 'prueba', 'Prueba*123'
+EXEC dbo.ValidarUsuario 'prueba', 'otra'
+EXEC dbo.ValidarUsuario 'prueba', 'prueba*123'
+
+-- Valor cifrado para probar la llave en las sucursales
+OPEN SYMMETRIC KEY LlaveUsuarios DECRYPTION BY CERTIFICATE CertificadoUsuarios
+SELECT EncryptByKey(Key_GUID('LlaveUsuarios'), N'Hola desde el Corporativo') AS valor_cifrado
+CLOSE SYMMETRIC KEY LlaveUsuarios
+
+-- Identificador de la llave
+SELECT name, key_guid FROM sys.symmetric_keys WHERE name = 'LlaveUsuarios'
+
+-- Borrar el usuario de prueba
+DELETE FROM dbo.Usuarios WHERE username = 'prueba'
+ALTER SEQUENCE Sequences.UsuarioID RESTART WITH 1
 GO

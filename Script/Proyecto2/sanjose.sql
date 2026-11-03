@@ -89,7 +89,7 @@ ALTER TABLE Warehouse.StockGroups ADD CONSTRAINT DF_StockGroups_ValidFrom DEFAUL
 ALTER TABLE Warehouse.StockItems ADD CONSTRAINT DF_StockItems_ValidFrom DEFAULT SYSUTCDATETIME() FOR ValidFrom, CONSTRAINT DF_StockItems_ValidTo DEFAULT '9999-12-31 23:59:59.9999999' FOR ValidTo
 GO
 
--- Verificamos que las tablas temporales y sus columnas se hayan convertido a normales (debería salir solo ColdRoomTemperatures con 2 filas: ValidFrom y ValidTo)
+-- Debe salir solo ColdRoomTemperatures y su tabla _Archive
 SELECT name AS tabla, temporal_type_desc
 FROM sys.tables
 WHERE temporal_type <> 0
@@ -159,7 +159,7 @@ BEGIN TRY
     THROW 50001, 'La fragmentación horizontal ya se aplicó en esta base', 1
   END
 
-  -- Movimientos de inventario de clientes de Limón. Las de factura van con su factura; los pagos sueltos, con su cliente
+ -- Movimientos de inventario: los de facturas de Limón y los de compras a proveedores (sin cliente)
   DELETE FROM Warehouse.StockItemTransactions
   WHERE InvoiceID IN (SELECT i.InvoiceID
                       FROM Sales.Invoices i
@@ -321,4 +321,101 @@ UNION ALL SELECT 'Unidades en inventario', SUM(QuantityOnHand) FROM Warehouse.St
 SELECT COL_LENGTH('Sales.Customers', 'PhoneNumber') AS cliente_telefono,
        COL_LENGTH('Purchasing.Suppliers', 'BankAccountNumber') AS proveedor_cuenta,
        COL_LENGTH('Application.People', 'EmailAddress') AS persona_email
+GO
+
+
+---------- Seguridad y Cifrado de Contraseñas ----------
+
+
+-- Confirmar en que BD vamos a trabajar
+USE WWI_SanJose
+GO
+SELECT @@SERVERNAME AS servidor, DB_NAME() AS base_de_datos
+GO
+
+/* 
+   Jerarquía de cifrado: master key -> certificado -> llave
+   KEY_SOURCE e IDENTITY_VALUE son los "secretos compartidos": al usar
+   los MISMOS en los 3 nodos, la llave simétrica queda Idéntica en todos
+   y una contraseña cifrada en el Corporativo se puede descifrar en las
+   sucursales. Según Microsoft Learn: Create identical symmetric keys on two servers.
+*/
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'MasterKey_SanJose*2026'
+GO
+
+CREATE CERTIFICATE CertificadoUsuarios
+WITH SUBJECT = 'Proteccion de contrasenas de usuarios'
+GO
+
+CREATE SYMMETRIC KEY LlaveUsuarios
+WITH ALGORITHM = AES_256,
+     KEY_SOURCE = 'WWI Proyecto 2 - fuente de la llave de usuarios',
+     IDENTITY_VALUE = 'WWI Proyecto 2 - identidad de la llave de usuarios'
+ENCRYPTION BY CERTIFICATE CertificadoUsuarios
+GO
+
+-- Tabla de usuarios (vacía, la llena la replicación)
+CREATE SEQUENCE Sequences.UsuarioID AS int START WITH 1 INCREMENT BY 1
+GO
+
+CREATE TABLE dbo.Usuarios (
+  iduser int NOT NULL CONSTRAINT DF_Usuarios_iduser DEFAULT (NEXT VALUE FOR Sequences.UsuarioID),
+  username nvarchar(50) NOT NULL,
+  password varbinary(256) NOT NULL,
+  fullname nvarchar(100) NOT NULL,
+  active bit NOT NULL CONSTRAINT DF_Usuarios_active DEFAULT 1,
+  rol nvarchar(20) NOT NULL,
+  email nvarchar(100) NULL,
+  hiredate date NOT NULL,
+  sucursal nvarchar(20) NULL,
+  CONSTRAINT PK_Usuarios PRIMARY KEY (iduser),
+  CONSTRAINT UQ_Usuarios_username UNIQUE (username),
+  CONSTRAINT CK_Usuarios_rol CHECK (rol IN ('Administrador', 'Corporativo')),
+  CONSTRAINT CK_Usuarios_sucursal CHECK (
+       (rol = 'Administrador' AND sucursal IN ('SanJose', 'Limon'))
+    OR (rol = 'Corporativo' AND sucursal IS NULL))
+)
+GO
+
+/*
+   ValidarUsuario: login de los administradores de San José
+   Funciona aunque el Corporativo esté caído (los usuarios están replicados).
+*/
+CREATE OR ALTER PROCEDURE dbo.ValidarUsuario
+  @username nvarchar(50),
+  @password nvarchar(100)
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+  OPEN SYMMETRIC KEY LlaveUsuarios DECRYPTION BY CERTIFICATE CertificadoUsuarios
+
+  SELECT iduser, username, fullname, rol, email, sucursal
+  FROM dbo.Usuarios
+  WHERE username = @username
+    AND CONVERT(nvarchar(100), DecryptByKey(password)) = @password COLLATE Latin1_General_100_CS_AS
+    AND active = 1
+    AND rol = 'Administrador'
+    AND sucursal = 'SanJose'
+
+  CLOSE SYMMETRIC KEY LlaveUsuarios
+END
+GO
+
+--Login de la API para el rol Administrador de San José
+CREATE LOGIN api_sanjose
+WITH PASSWORD = 'ApiSanJose*2026', CHECK_POLICY = OFF, DEFAULT_DATABASE = WWI_SanJose
+GO
+
+CREATE USER api_sanjose FOR LOGIN api_sanjose
+CREATE ROLE rol_administrador
+ALTER ROLE rol_administrador ADD MEMBER api_sanjose
+GRANT EXECUTE ON dbo.ValidarUsuario TO rol_administrador
+GO
+
+-- Prueba: descifrar el valor que se cifró en el Corporativo
+SELECT name, key_guid FROM sys.symmetric_keys WHERE name = 'LlaveUsuarios'
+
+OPEN SYMMETRIC KEY LlaveUsuarios DECRYPTION BY CERTIFICATE CertificadoUsuarios
+SELECT CONVERT(nvarchar(100), DecryptByKey(0x001D9751BEF319ACB1F935B2AD724C8B020000001AD5DF3447F2BAFAD11F2A51D275EA947A148BC6B026C8E3234A074847E6DECCDE8E20B5DA9BD914D29B0F3A5CE5F000E4F5ED41527729F4816156BF64772BF8C83D44325966004F31AF0D4198833DE9)) AS valor_descifrado
+CLOSE SYMMETRIC KEY LlaveUsuarios
 GO
