@@ -377,3 +377,312 @@ SELECT name, key_guid FROM sys.symmetric_keys WHERE name = 'LlaveUsuarios'
 DELETE FROM dbo.Usuarios WHERE username = 'prueba'
 ALTER SEQUENCE Sequences.UsuarioID RESTART WITH 1
 GO
+
+
+---------- Replicación transaccional ----------
+
+
+-- Verificar el nombre del servidor: debe ser sqlcorporativo
+USE master
+GO
+SELECT @@SERVERNAME AS servidor
+GO
+
+
+/*
+   Configurar el Distribuidor y la base de distribución
+   El Corporativo es su propio distribuidor (al igual como se ve en el tutorial de
+   Learn para Linux). Se crea la base "distribution", donde se guardan los
+   cambios mientras se envían a las sucursales.
+*/
+EXEC sp_adddistributor @distributor = N'sqlcorporativo'
+GO
+
+EXEC sp_adddistributiondb
+  @database = N'distribution',
+  @log_file_size = 2,
+  @deletebatchsize_xact = 5000,
+  @deletebatchsize_cmd = 2000,
+  @security_mode = 0,
+  @login = N'sa',
+  @password = N'WWI_Bases2*2026'
+GO
+
+-- Carpeta de trabajo de los agentes, creadas en el contenedor Docker
+USE distribution
+GO
+IF NOT EXISTS (SELECT * FROM sysobjects WHERE name = 'UIProperties' AND type = 'U')
+  CREATE TABLE UIProperties (id int)
+
+IF EXISTS (SELECT * FROM ::fn_listextendedproperty('SnapshotFolder', 'user', 'dbo', 'table', 'UIProperties', NULL, NULL))
+  EXEC sp_updateextendedproperty N'SnapshotFolder', N'/var/opt/mssql/data/ReplData/', 'user', dbo, 'table', 'UIProperties'
+ELSE
+  EXEC sp_addextendedproperty N'SnapshotFolder', N'/var/opt/mssql/data/ReplData/', 'user', dbo, 'table', 'UIProperties'
+GO
+
+-- El Corporativo queda registrado como publicador de este distribuidor
+EXEC sp_adddistpublisher
+  @publisher = N'sqlcorporativo',
+  @distribution_db = N'distribution',
+  @security_mode = 0,
+  @login = N'sa',
+  @password = N'WWI_Bases2*2026',
+  @working_directory = N'/var/opt/mssql/data/ReplData',
+  @trusted = N'false',
+  @thirdparty_flag = 0,
+  @publisher_type = N'MSSQLSERVER'
+GO
+
+
+/*
+   Habilitar WWI_Corporativo para publicar y crear el Log Reader
+   El Log Reader lee el log de transacciones y manda los cambios
+   (INSERT / UPDATE / DELETE) de las tablas publicadas al distribuidor.
+*/
+USE WWI_Corporativo
+GO
+
+EXEC sp_replicationdboption
+  @dbname = N'WWI_Corporativo',
+  @optname = N'publish',
+  @value = N'true'
+GO
+
+EXEC sp_addlogreader_agent
+  @job_login = NULL,
+  @job_password = NULL,
+  @publisher_security_mode = 0,
+  @publisher_login = N'sa',
+  @publisher_password = N'WWI_Bases2*2026'
+GO
+
+
+/*
+   Crear la Publicación transaccional
+   - repl_freq = continuous: los cambios se envían apenas ocurren
+   - allow_push: los agentes corren en el Corporativo
+   - immediate_sync = false: no se necesita snapshot (las sucursales ya tienen los datos)
+   - retention = 0: las suscripciones nunca expiran
+*/
+EXEC sp_addpublication
+  @publication = N'CatalogosWWI',
+  @description = N'Catalogos de Wide World Importers: del Corporativo a San Jose y Limon',
+  @sync_method = N'concurrent',
+  @retention = 0,
+  @allow_push = N'true',
+  @allow_pull = N'false',
+  @allow_anonymous = N'false',
+  @immediate_sync = N'false',
+  @independent_agent = N'true',
+  @repl_freq = N'continuous',
+  @status = N'active'
+GO
+
+
+/*
+   Artículos: las tablas que se replican
+   pre_creation_cmd = none: si algún día se aplica un snapshot, nunca se borran las tablas de las sucursales.
+*/
+
+-- Productos
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'StockItems',           @source_owner = N'Warehouse', @source_object = N'StockItems',           @destination_owner = N'Warehouse', @destination_table = N'StockItems',           @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'StockGroups',          @source_owner = N'Warehouse', @source_object = N'StockGroups',          @destination_owner = N'Warehouse', @destination_table = N'StockGroups',          @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'StockItemStockGroups', @source_owner = N'Warehouse', @source_object = N'StockItemStockGroups', @destination_owner = N'Warehouse', @destination_table = N'StockItemStockGroups', @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'Colors',               @source_owner = N'Warehouse', @source_object = N'Colors',               @destination_owner = N'Warehouse', @destination_table = N'Colors',               @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'PackageTypes',         @source_owner = N'Warehouse', @source_object = N'PackageTypes',         @destination_owner = N'Warehouse', @destination_table = N'PackageTypes',         @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+
+-- Catálogos generales
+-- Cities, StateProvinces y Countries tienen columnas geography: se usa la opción de esquema
+-- por defecto (0x30F3) sin 0x20, porque 0x20 convierte geography a image y la replicación falla
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'Cities',             @source_owner = N'Application', @source_object = N'Cities',             @destination_owner = N'Application', @destination_table = N'Cities',             @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual', @schema_option = 0x00000000000030D3
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'StateProvinces',     @source_owner = N'Application', @source_object = N'StateProvinces',     @destination_owner = N'Application', @destination_table = N'StateProvinces',     @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual', @schema_option = 0x00000000000030D3
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'Countries',          @source_owner = N'Application', @source_object = N'Countries',          @destination_owner = N'Application', @destination_table = N'Countries',          @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual', @schema_option = 0x00000000000030D3
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'DeliveryMethods',    @source_owner = N'Application', @source_object = N'DeliveryMethods',    @destination_owner = N'Application', @destination_table = N'DeliveryMethods',    @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'PaymentMethods',     @source_owner = N'Application', @source_object = N'PaymentMethods',     @destination_owner = N'Application', @destination_table = N'PaymentMethods',     @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'TransactionTypes',   @source_owner = N'Application', @source_object = N'TransactionTypes',   @destination_owner = N'Application', @destination_table = N'TransactionTypes',   @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'CustomerCategories', @source_owner = N'Sales',       @source_object = N'CustomerCategories', @destination_owner = N'Sales',       @destination_table = N'CustomerCategories', @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'BuyingGroups',       @source_owner = N'Sales',       @source_object = N'BuyingGroups',       @destination_owner = N'Sales',       @destination_table = N'BuyingGroups',       @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'SpecialDeals',       @source_owner = N'Sales',       @source_object = N'SpecialDeals',       @destination_owner = N'Sales',       @destination_table = N'SpecialDeals',       @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'SupplierCategories', @source_owner = N'Purchasing',  @source_object = N'SupplierCategories', @destination_owner = N'Purchasing',  @destination_table = N'SupplierCategories', @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+
+-- Nuestras tablas
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'AsignacionSucursal', @source_owner = N'dbo', @source_object = N'AsignacionSucursal', @destination_owner = N'dbo', @destination_table = N'AsignacionSucursal', @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'Usuarios',           @source_owner = N'dbo', @source_object = N'Usuarios',           @destination_owner = N'dbo', @destination_table = N'Usuarios',           @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual'
+
+-- Las 3 tablas con Fragmentación Vertical: vertical_partition = true
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'Customers', @source_owner = N'Sales',       @source_object = N'Customers', @destination_owner = N'Sales',       @destination_table = N'Customers', @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual', @vertical_partition = N'true'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'Suppliers', @source_owner = N'Purchasing',  @source_object = N'Suppliers', @destination_owner = N'Purchasing',  @destination_table = N'Suppliers', @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual', @vertical_partition = N'true'
+EXEC sp_addarticle @publication = N'CatalogosWWI', @article = N'People',    @source_owner = N'Application', @source_object = N'People',    @destination_owner = N'Application', @destination_table = N'People',    @type = N'logbased', @pre_creation_cmd = N'none', @identityrangemanagementoption = N'manual', @vertical_partition = N'true'
+GO
+
+
+/*
+   Filtro de columnas (fragmentación vertical en la replicación)
+   Según Learn: primero se agregan todas las columnas (@column = NULL)
+   y después se quita, una por una, cada columna que NO se publica.
+   Al final sp_articleview crea los objetos de sincronización.
+*/
+
+-- Clientes: todas menos contacto y direcciones
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = NULL, @operation = N'add'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'PrimaryContactPersonID',   @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'AlternateContactPersonID', @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'PhoneNumber',              @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'FaxNumber',                @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'WebsiteURL',               @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'DeliveryAddressLine1',     @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'DeliveryAddressLine2',     @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'DeliveryPostalCode',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'DeliveryLocation',         @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'PostalAddressLine1',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'PostalAddressLine2',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Customers', @column = N'PostalPostalCode',         @operation = N'drop'
+EXEC sp_articleview   @publication = N'CatalogosWWI', @article = N'Customers'
+
+-- Proveedores: todas menos contacto, direcciones y datos bancarios
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = NULL, @operation = N'add'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'PrimaryContactPersonID',   @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'AlternateContactPersonID', @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'BankAccountName',          @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'BankAccountBranch',        @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'BankAccountCode',          @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'BankAccountNumber',        @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'BankInternationalCode',    @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'PhoneNumber',              @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'FaxNumber',                @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'WebsiteURL',               @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'DeliveryAddressLine1',     @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'DeliveryAddressLine2',     @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'DeliveryPostalCode',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'DeliveryLocation',         @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'PostalAddressLine1',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'PostalAddressLine2',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'Suppliers', @column = N'PostalPostalCode',         @operation = N'drop'
+EXEC sp_articleview   @publication = N'CatalogosWWI', @article = N'Suppliers'
+
+-- Personas: todas menos usuario, contraseña y forma de contacto
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = NULL, @operation = N'add'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'LogonName',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'HashedPassword',  @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'PhoneNumber',     @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'FaxNumber',       @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'EmailAddress',    @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'Photo',           @operation = N'drop'
+EXEC sp_articlecolumn @publication = N'CatalogosWWI', @article = N'People', @column = N'UserPreferences', @operation = N'drop'
+EXEC sp_articleview   @publication = N'CatalogosWWI', @article = N'People'
+GO
+
+
+/*
+   Suscripciones Push (sin snapshot: 'replication support only')
+   - San José: se conecta con usuario_corporativo (db_owner en WWI_SanJose)
+   - Limón: se conecta con sa
+   frequency_type = 64: el agente corre en modo continuo.
+*/
+
+-- San José (Windows)
+EXEC sp_addsubscription
+  @publication = N'CatalogosWWI',
+  @subscriber = N'DESKTOP-8CTQSKC',
+  @destination_db = N'WWI_SanJose',
+  @subscription_type = N'Push',
+  @sync_type = N'replication support only',
+  @article = N'all',
+  @update_mode = N'read only',
+  @subscriber_type = 0
+
+EXEC sp_addpushsubscription_agent
+  @publication = N'CatalogosWWI',
+  @subscriber = N'DESKTOP-8CTQSKC',
+  @subscriber_db = N'WWI_SanJose',
+  @subscriber_security_mode = 0,
+  @subscriber_login = N'usuario_corporativo',
+  @subscriber_password = N'Corp_WWI*2026',
+  @frequency_type = 64
+GO
+
+-- Limón (Red Hat)
+EXEC sp_addsubscription
+  @publication = N'CatalogosWWI',
+  @subscriber = N'sqllimon',
+  @destination_db = N'WWI_Limon',
+  @subscription_type = N'Push',
+  @sync_type = N'replication support only',
+  @article = N'all',
+  @update_mode = N'read only',
+  @subscriber_type = 0
+
+EXEC sp_addpushsubscription_agent
+  @publication = N'CatalogosWWI',
+  @subscriber = N'sqllimon',
+  @subscriber_db = N'WWI_Limon',
+  @subscriber_security_mode = 0,
+  @subscriber_login = N'sa',
+  @subscriber_password = N'WWI_Bases2*2026',
+  @frequency_type = 64
+GO
+
+
+/*
+   Arrancar los agentes
+   Esta consulta arma los comandos para arrancar el Log Reader y los dos agentes de distribución.
+*/
+SELECT 'EXEC msdb.dbo.sp_start_job N''' + j.name + '''' AS ejecutar_esto, c.name AS tipo
+FROM msdb.dbo.sysjobs j
+INNER JOIN msdb.dbo.syscategories c ON c.category_id = j.category_id
+WHERE c.name IN ('REPL-LogReader', 'REPL-Distribution')
+GO
+
+
+/*
+   Revisar que los agentes estén trabajando
+*/
+-- Publicación y artículos
+SELECT p.publication, COUNT(a.article_id) AS articulos
+FROM distribution.dbo.MSpublications p
+INNER JOIN distribution.dbo.MSarticles a ON a.publication_id = p.publication_id
+GROUP BY p.publication
+
+-- Últimos mensajes del Log Reader
+SELECT TOP 5 time, comments
+FROM distribution.dbo.MSlogreader_history
+ORDER BY time DESC
+
+-- Últimos mensajes de cada agente de distribución
+SELECT TOP 10 a.subscriber_db, h.time, h.comments
+FROM distribution.dbo.MSdistribution_history h
+INNER JOIN distribution.dbo.MSdistribution_agents a ON a.id = h.agent_id
+ORDER BY h.time DESC
+GO
+
+-- Prueba #1
+USE WWI_Corporativo
+GO
+UPDATE Warehouse.StockItems
+SET RecommendedRetailPrice = RecommendedRetailPrice + 1
+WHERE StockItemID = 1
+
+SELECT StockItemID, StockItemName, RecommendedRetailPrice
+FROM Warehouse.StockItems WHERE StockItemID = 1
+
+-- Regreso el precio original
+UPDATE Warehouse.StockItems
+SET RecommendedRetailPrice = RecommendedRetailPrice - 1
+WHERE StockItemID = 1
+
+
+-- Prueba #2
+USE WWI_Corporativo
+GO
+EXEC dbo.CrearUsuario
+  @username = 'corporativo', @password = 'Corporativo*2026', @fullname = 'Gerencia Corporativa',
+  @rol = 'Corporativo', @email = 'corporativo@wwi.com', @hiredate = '2026-01-15'
+
+EXEC dbo.CrearUsuario
+  @username = 'admin_sanjose', @password = 'SanJose*2026', @fullname = 'Administrador San José',
+  @rol = 'Administrador', @email = 'admin.sanjose@wwi.com', @hiredate = '2026-02-01', @sucursal = 'SanJose'
+
+EXEC dbo.CrearUsuario
+  @username = 'admin_limon', @password = 'Limon*2026', @fullname = 'Administrador Limón',
+  @rol = 'Administrador', @email = 'admin.limon@wwi.com', @hiredate = '2026-02-01', @sucursal = 'Limon'
+GO

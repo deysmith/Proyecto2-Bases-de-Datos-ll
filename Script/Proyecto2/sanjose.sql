@@ -419,3 +419,31 @@ OPEN SYMMETRIC KEY LlaveUsuarios DECRYPTION BY CERTIFICATE CertificadoUsuarios
 SELECT CONVERT(nvarchar(100), DecryptByKey(0x001D9751BEF319ACB1F935B2AD724C8B020000001AD5DF3447F2BAFAD11F2A51D275EA947A148BC6B026C8E3234A074847E6DECCDE8E20B5DA9BD914D29B0F3A5CE5F000E4F5ED41527729F4816156BF64772BF8C83D44325966004F31AF0D4198833DE9)) AS valor_descifrado
 CLOSE SYMMETRIC KEY LlaveUsuarios
 GO
+
+USE WWI_SanJose
+GO
+SELECT @@SERVERNAME AS servidor,
+  (SELECT COUNT(*) FROM Application.Cities) AS ciudades,
+  (SELECT COUNT(*) FROM Application.People) AS personas,
+  (SELECT COUNT(*) FROM Sales.Customers) AS clientes,
+  (SELECT COUNT(*) FROM Purchasing.Suppliers) AS proveedores,
+  (SELECT COUNT(*) FROM Warehouse.StockItems) AS productos,
+  (SELECT COUNT(*) FROM Warehouse.StockItemStockGroups) AS grupos_productos,
+  (SELECT COUNT(*) FROM Sales.SpecialDeals) AS ofertas,
+  (SELECT COUNT(*) FROM dbo.Usuarios) AS usuarios
+
+-- Muestra de prueba #1
+SELECT StockItemID, StockItemName, RecommendedRetailPrice
+FROM Warehouse.StockItems WHERE StockItemID = 1
+
+-- Muestra de prueba #2
+USE WWI_SanJose
+GO
+-- Los 3 usuarios llegaron por replicación, con la contraseña cifrada
+SELECT iduser, username, rol, sucursal, password FROM dbo.Usuarios
+
+-- El admin de San José puede iniciar sesión aquí (1 fila)
+EXEC dbo.ValidarUsuario 'admin_sanjose', 'SanJose*2026'
+
+-- El admin de Limón NO puede iniciar sesión en San José (0 filas)
+EXEC dbo.ValidarUsuario 'admin_limon', 'Limon*2026'
