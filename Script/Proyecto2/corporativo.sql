@@ -686,3 +686,147 @@ EXEC dbo.CrearUsuario
   @username = 'admin_limon', @password = 'Limon*2026', @fullname = 'Administrador Limón',
   @rol = 'Administrador', @email = 'admin.limon@wwi.com', @hiredate = '2026-02-01', @sucursal = 'Limon'
 GO
+
+
+---------- Linked servers ----------
+
+
+/*
+   Login que usan las sucursales (linked server CORPORATIVO).
+   Solo puede leer las 3 tablas con datos sensibles, para reconstruir
+   el detalle completo de clientes, proveedores y personas.
+*/
+USE WWI_Corporativo
+GO
+CREATE LOGIN lectura_sucursal
+WITH PASSWORD = 'LecturaSuc*2026', CHECK_POLICY = OFF, DEFAULT_DATABASE = WWI_Corporativo
+GO
+CREATE USER lectura_sucursal FOR LOGIN lectura_sucursal
+GO
+
+/*
+   Fragmentos Sensibles (fragmentación vertical).
+   Cada vista tiene la llave primaria + los datos de privacidad / forma de contacto.
+   Las sucursales leen estas vistas por linked server para reconstruir el detalle
+   completo de un cliente, proveedor o persona.
+   La ubicación (geography) se expone como latitud y longitud porque SQL Server
+   no permite tipos CLR en consultas distribuidas.
+*/
+CREATE OR ALTER VIEW dbo.ClientesSensibles
+AS
+SELECT
+  CustomerID,
+  PrimaryContactPersonID,
+  AlternateContactPersonID,
+  PhoneNumber,
+  FaxNumber,
+  WebsiteURL,
+  DeliveryAddressLine1,
+  DeliveryAddressLine2,
+  DeliveryPostalCode,
+  DeliveryLocation.Lat AS Latitud,
+  DeliveryLocation.Long AS Longitud,
+  PostalAddressLine1,
+  PostalAddressLine2,
+  PostalPostalCode
+FROM Sales.Customers
+GO
+
+CREATE OR ALTER VIEW dbo.ProveedoresSensibles
+AS
+SELECT
+  SupplierID,
+  PrimaryContactPersonID,
+  AlternateContactPersonID,
+  BankAccountName,
+  BankAccountBranch,
+  BankAccountCode,
+  BankAccountNumber,
+  BankInternationalCode,
+  PhoneNumber,
+  FaxNumber,
+  WebsiteURL,
+  DeliveryAddressLine1,
+  DeliveryAddressLine2,
+  DeliveryPostalCode,
+  DeliveryLocation.Lat  AS Latitud,
+  DeliveryLocation.Long AS Longitud,
+  PostalAddressLine1,
+  PostalAddressLine2,
+  PostalPostalCode
+FROM Purchasing.Suppliers
+GO
+
+CREATE OR ALTER VIEW dbo.PersonasSensibles
+AS
+SELECT
+  PersonID,
+  LogonName,
+  PhoneNumber,
+  FaxNumber,
+  EmailAddress
+FROM Application.People
+GO
+
+-- El login de las sucursales SOLO puede leer las 3 vistas, no las tablas
+GRANT SELECT ON dbo.ClientesSensibles TO lectura_sucursal
+GRANT SELECT ON dbo.ProveedoresSensibles TO lectura_sucursal
+GRANT SELECT ON dbo.PersonasSensibles TO lectura_sucursal
+GO
+
+/*
+   Linked servers hacia las sucursales.
+   - @server: el nombre que usamos en las consultas (SANJOSE / LIMON)
+   - @datasrc: el servidor real
+   - Proveedor MSOLEDBSQL, el recomendado por Microsoft Learn
+*/
+USE master
+GO
+EXEC sp_addlinkedserver
+  @server = N'SANJOSE',
+  @srvproduct = N'',
+  @provider = N'MSOLEDBSQL',
+  @datasrc = N'DESKTOP-8CTQSKC'
+
+EXEC sp_addlinkedsrvlogin
+  @rmtsrvname = N'SANJOSE',
+  @useself = N'False',
+  @locallogin = NULL,
+  @rmtuser = N'lectura_corporativo',
+  @rmtpassword = N'LecturaCorp*2026'
+
+-- Si San José no responde en 5 segundos, la consulta falla (no se queda esperando)
+EXEC sp_serveroption @server = N'SANJOSE', @optname = N'connect timeout', @optvalue = N'5'
+GO
+
+EXEC sp_addlinkedserver
+  @server = N'LIMON',
+  @srvproduct = N'',
+  @provider = N'MSOLEDBSQL',
+  @datasrc = N'sqllimon'
+
+EXEC sp_addlinkedsrvlogin
+  @rmtsrvname = N'LIMON',
+  @useself = N'False',
+  @locallogin = NULL,
+  @rmtuser = N'lectura_corporativo',
+  @rmtpassword = N'LecturaCorp*2026'
+
+EXEC sp_serveroption @server = N'LIMON', @optname = N'connect timeout', @optvalue = N'5'
+GO
+
+/*
+   Pruebas de los linked servers
+*/
+-- Facturas de cada sucursal consultadas desde el Corporativo
+SELECT 'San José' AS sucursal, COUNT(*) AS facturas FROM SANJOSE.WWI_SanJose.Sales.Invoices
+UNION ALL
+SELECT 'Limón', COUNT(*) FROM LIMON.WWI_Limon.Sales.Invoices
+
+-- Primera consulta distribuida: total vendido por sucursal y consolidado
+SELECT 'San José' AS sucursal, SUM(il.ExtendedPrice) AS total_vendido
+FROM SANJOSE.WWI_SanJose.Sales.InvoiceLines il
+UNION ALL
+SELECT 'Limón', SUM(il.ExtendedPrice)
+FROM LIMON.WWI_Limon.Sales.InvoiceLines il
+GO

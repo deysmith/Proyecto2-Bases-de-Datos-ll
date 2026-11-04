@@ -420,3 +420,60 @@ GO
 SELECT iduser, username, rol, sucursal FROM dbo.Usuarios
 EXEC dbo.ValidarUsuario 'admin_limon', 'Limon*2026' -- 1 fila
 EXEC dbo.ValidarUsuario 'admin_sanjose', 'SanJose*2026' -- 0 filas
+
+
+---------- Linked servers ----------
+
+
+/*
+   Login de solo lectura que usa el Corporativo (linked server LIMON)
+   para consultar las ventas e inventario de Limón.
+*/
+USE WWI_Limon
+GO
+CREATE LOGIN lectura_corporativo
+WITH PASSWORD = 'LecturaCorp*2026', CHECK_POLICY = OFF, DEFAULT_DATABASE = WWI_Limon
+GO
+CREATE USER lectura_corporativo FOR LOGIN lectura_corporativo
+ALTER ROLE db_datareader ADD MEMBER lectura_corporativo
+GO
+
+
+/*
+   Linked server hacia el Corporativo, para leer los datos sensibles.
+   Limón está en la misma red de Docker: llega al Corporativo por su nombre.
+*/
+USE master
+GO
+EXEC sp_addlinkedserver
+  @server = N'CORPORATIVO',
+  @srvproduct = N'',
+  @provider = N'MSOLEDBSQL',
+  @datasrc = N'sqlcorporativo'
+
+EXEC sp_addlinkedsrvlogin
+  @rmtsrvname = N'CORPORATIVO',
+  @useself = N'False',
+  @locallogin = NULL,
+  @rmtuser = N'lectura_sucursal',
+  @rmtpassword = N'LecturaSuc*2026'
+
+EXEC sp_serveroption @server = N'CORPORATIVO', @optname = N'connect timeout', @optvalue = N'5'
+GO
+
+-- Prueba: reconstruir la fragmentación vertical
+USE WWI_Limon
+GO
+SELECT TOP 5
+  c.CustomerID,
+  c.CustomerName, -- fragmento general (San José)
+  p.FullName AS Contacto, -- fragmento general (San José)
+  s.PhoneNumber, -- fragmento sensible (Corporativo)
+  s.DeliveryAddressLine1, -- fragmento sensible (Corporativo)
+  s.Latitud,
+  s.Longitud
+FROM Sales.Customers c
+INNER JOIN CORPORATIVO.WWI_Corporativo.dbo.ClientesSensibles s ON s.CustomerID = c.CustomerID
+LEFT JOIN Application.People p ON p.PersonID = s.PrimaryContactPersonID
+WHERE c.Sucursal = 'Limon'
+GO

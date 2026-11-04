@@ -447,3 +447,65 @@ EXEC dbo.ValidarUsuario 'admin_sanjose', 'SanJose*2026'
 
 -- El admin de Limón NO puede iniciar sesión en San José (0 filas)
 EXEC dbo.ValidarUsuario 'admin_limon', 'Limon*2026'
+
+
+---------- Linked servers ----------
+
+
+/*
+   Login de solo lectura que usa el Corporativo (linked server SANJOSE)
+   para consultar las ventas e inventario de San José.
+*/
+USE WWI_SanJose
+GO
+CREATE LOGIN lectura_corporativo
+WITH PASSWORD = 'LecturaCorp*2026', CHECK_POLICY = OFF, DEFAULT_DATABASE = WWI_SanJose
+GO
+CREATE USER lectura_corporativo FOR LOGIN lectura_corporativo
+ALTER ROLE db_datareader ADD MEMBER lectura_corporativo
+GO
+
+/*
+   Linked server hacia el Corporativo, para leer los datos sensibles.
+*/
+USE master
+GO
+EXEC sp_addlinkedserver
+  @server = N'CORPORATIVO',
+  @srvproduct = N'',
+  @provider = N'MSOLEDBSQL',
+  @datasrc = N'localhost,1440'
+
+EXEC sp_addlinkedsrvlogin
+  @rmtsrvname = N'CORPORATIVO',
+  @useself = N'False',
+  @locallogin = NULL,
+  @rmtuser = N'lectura_sucursal',
+  @rmtpassword = N'LecturaSuc*2026'
+
+EXEC sp_serveroption @server = N'CORPORATIVO', @optname = N'connect timeout', @optvalue = N'5'
+GO
+
+/*
+   Prueba: Reconstruir la fragmentación vertical.
+   El nombre del cliente está aquí; el teléfono y la dirección están en el Corporativo.
+*/
+USE WWI_SanJose
+GO
+SELECT TOP 5
+  c.CustomerID,
+  c.CustomerName, -- fragmento general (San José)
+  p.FullName AS Contacto, -- fragmento general (San José)
+  s.PhoneNumber, -- fragmento sensible (Corporativo)
+  s.DeliveryAddressLine1, -- fragmento sensible (Corporativo)
+  s.Latitud,
+  s.Longitud
+FROM Sales.Customers c
+INNER JOIN CORPORATIVO.WWI_Corporativo.dbo.ClientesSensibles s ON s.CustomerID = c.CustomerID
+LEFT JOIN Application.People p ON p.PersonID = s.PrimaryContactPersonID
+WHERE c.Sucursal = 'SanJose'
+GO
+
+-- Prueba de seguridad: el login de lectura no puede ver otras tablas del Corporativo
+SELECT TOP 1 * FROM CORPORATIVO.WWI_Corporativo.Purchasing.PurchaseOrders
+GO
