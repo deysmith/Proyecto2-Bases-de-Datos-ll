@@ -830,3 +830,314 @@ UNION ALL
 SELECT 'Limón', SUM(il.ExtendedPrice)
 FROM LIMON.WWI_Limon.Sales.InvoiceLines il
 GO
+
+
+---------- Persona PagWeb (la replicación la lleva a las sucursales) ----------
+
+
+USE WWI_Corporativo
+GO
+INSERT INTO personas (
+  FullName, PreferredName, IsPermittedToLogon, IsExternalLogonProvider,
+  IsSystemUser, IsEmployee, IsSalesperson, LastEditedBy
+)
+VALUES ('PagWeb', 'PagWeb', 0, 0, 1, 1, 0, 1)
+GO
+
+SELECT PersonID, FullName FROM personas WHERE FullName = 'PagWeb'
+GO
+
+
+---------- Productos y concurrencia (solo en el Corporativo) ----------
+
+
+USE WWI_Corporativo
+GO
+
+/*
+  AgregarNuevoProducto
+  Crea el producto en el catálogo maestro. La replicación lo lleva a las
+  sucursales, y el trigger de cada sucursal le crea su inventario en 0.
+  Concurrencia: UPDLOCK + HOLDLOCK bloquean la búsqueda por nombre hasta el
+  COMMIT, así dos sucursales no pueden crear el mismo producto a la vez.
+*/
+CREATE OR ALTER PROCEDURE AgregarNuevoProducto
+  @Nombre_Producto nvarchar(100),
+  @ProveedorID int,
+  @ColorID int = NULL,
+  @UnitPackageID int,
+  @OuterPackageID int,
+  @Marca nvarchar(50) = NULL,
+  @Size nvarchar(20) = NULL,
+  @QuantityPerOuter int,
+  @TaxRate decimal(18, 3),
+  @UnitPrice decimal(18, 2),
+  @RecommendedPrice decimal(18, 2) = NULL,
+  @TypicalWeight decimal(18, 3),
+  @MarketingSearchDetails nvarchar(MAX),
+  @Grupos_Productos nvarchar(100)
+AS
+BEGIN
+  SET XACT_ABORT ON
+  DECLARE @PersonaEncargadaID int
+  DECLARE @ID_Producto int
+  BEGIN TRY
+    BEGIN TRANSACTION
+
+    IF EXISTS (
+      SELECT 1
+      FROM productos p WITH (UPDLOCK, HOLDLOCK)
+      WHERE p.StockItemName = @Nombre_Producto
+    )
+    BEGIN
+      THROW 50002, 'Ya existe un producto con ese nombre', 1
+    END
+
+    SELECT @PersonaEncargadaID = p.PersonID
+    FROM personas p
+    WHERE FullName = 'PagWeb'
+
+    INSERT INTO productos (
+      StockItemName, SupplierID, ColorID, UnitPackageID, OuterPackageID,
+      Brand, Size, LeadTimeDays, QuantityPerOuter, IsChillerStock,
+      TaxRate, UnitPrice, RecommendedRetailPrice, TypicalWeightPerUnit,
+      MarketingComments, LastEditedBy
+    )
+    VALUES (
+      @Nombre_Producto, @ProveedorID, @ColorID, @UnitPackageID, @OuterPackageID,
+      @Marca, @Size, 7, @QuantityPerOuter, 0,
+      @TaxRate, @UnitPrice, @RecommendedPrice, @TypicalWeight,
+      @MarketingSearchDetails, @PersonaEncargadaID
+    )
+
+    SELECT @ID_Producto = p.StockItemID
+    FROM productos p
+    WHERE p.StockItemName = @Nombre_Producto
+
+    INSERT INTO grupos_productos (StockItemID, StockGroupID, LastEditedBy)
+    SELECT @ID_Producto, CAST(value AS int), @PersonaEncargadaID
+    FROM STRING_SPLIT(@Grupos_Productos, ',')
+
+    COMMIT TRANSACTION
+
+    SELECT StockItemID, CONVERT(varchar(27), ValidFrom, 121) AS Version
+    FROM productos WHERE StockItemID = @ID_Producto
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0
+      ROLLBACK TRANSACTION
+    SELECT
+      ERROR_NUMBER() AS NumeroError,
+      ERROR_MESSAGE() AS MensajeError,
+      ERROR_LINE() AS LineaError
+  END CATCH
+END
+GO
+
+/*
+  EditarDatosProducto
+  Control de concurrencia Optimista: @Version es el ValidFrom que tenía el
+  producto cuando el usuario lo abrió. El UPDATE solo se hace si la versión
+  sigue igual; si otro usuario lo modificó antes, no se actualiza ninguna
+  fila y se avisa. Cada modificación pone una versión nueva (SYSUTCDATETIME).
+*/
+CREATE OR ALTER PROCEDURE EditarDatosProducto
+  @ID_Producto int,
+  @Version varchar(27),
+  @Nombre_Producto nvarchar(100) = NULL,
+  @ColorID int = NULL,
+  @UnitPackageID int = NULL,
+  @OuterPackageID int = NULL,
+  @Marca nvarchar(50) = NULL,
+  @Size nvarchar(20) = NULL,
+  @QuantityPerOuter int = NULL,
+  @TaxRate decimal(18, 3) = NULL,
+  @UnitPrice decimal(18, 2) = NULL,
+  @RecommendedPrice decimal(18, 2) = NULL,
+  @TypicalWeight decimal(18, 3) = NULL,
+  @MarketingSearchDetails nvarchar(MAX) = NULL,
+  @Grupos_Productos nvarchar(100) = NULL
+AS
+BEGIN
+  SET XACT_ABORT ON
+  DECLARE @PersonaEncargadaID int
+  BEGIN TRY
+    BEGIN TRANSACTION
+
+    IF NOT EXISTS (SELECT 1 FROM productos p WHERE p.StockItemID = @ID_Producto)
+    BEGIN
+      THROW 50017, 'El producto indicado no existe', 1
+    END
+
+    IF @Nombre_Producto IS NOT NULL AND EXISTS (
+      SELECT 1
+      FROM productos p WITH (UPDLOCK, HOLDLOCK)
+      WHERE p.StockItemName = @Nombre_Producto AND p.StockItemID <> @ID_Producto
+    )
+    BEGIN
+      THROW 50018, 'Ya existe un producto con ese nombre', 1
+    END
+
+    UPDATE productos
+    SET
+      StockItemName = ISNULL(@Nombre_Producto, StockItemName),
+      ColorID = ISNULL(@ColorID, ColorID),
+      UnitPackageID = ISNULL(@UnitPackageID, UnitPackageID),
+      OuterPackageID = ISNULL(@OuterPackageID, OuterPackageID),
+      UnitPrice = ISNULL(@UnitPrice, UnitPrice),
+      Brand = ISNULL(@Marca, Brand),
+      Size = ISNULL(@Size, Size),
+      QuantityPerOuter = ISNULL(@QuantityPerOuter, QuantityPerOuter),
+      TaxRate = ISNULL(@TaxRate, TaxRate),
+      RecommendedRetailPrice = ISNULL(@RecommendedPrice, RecommendedRetailPrice),
+      TypicalWeightPerUnit = ISNULL(@TypicalWeight, TypicalWeightPerUnit),
+      MarketingComments = ISNULL(@MarketingSearchDetails, MarketingComments),
+      ValidFrom = SYSUTCDATETIME()
+    WHERE StockItemID = @ID_Producto
+      AND CONVERT(varchar(27), ValidFrom, 121) = @Version
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+      THROW 50040, 'El producto fue modificado por otro usuario. Recargue los datos e intente de nuevo', 1
+    END
+
+    IF @Grupos_Productos IS NOT NULL
+    BEGIN
+      SELECT @PersonaEncargadaID = p.PersonID FROM personas p WHERE FullName = 'PagWeb'
+
+      DELETE FROM grupos_productos WHERE StockItemID = @ID_Producto
+
+      INSERT INTO grupos_productos (StockItemID, StockGroupID, LastEditedBy)
+      SELECT @ID_Producto, CAST(value AS int), @PersonaEncargadaID
+      FROM STRING_SPLIT(@Grupos_Productos, ',')
+    END
+
+    COMMIT TRANSACTION
+
+    SELECT StockItemID, CONVERT(varchar(27), ValidFrom, 121) AS Version
+    FROM productos WHERE StockItemID = @ID_Producto
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0
+      ROLLBACK TRANSACTION
+    SELECT
+      ERROR_NUMBER() AS NumeroError,
+      ERROR_MESSAGE() AS MensajeError,
+      ERROR_LINE() AS LineaError
+  END CATCH
+END
+GO
+
+/*
+  EliminarProducto
+  1. Valida en el Corporativo (compras, movimientos y ofertas).
+  2. Verifica que las dos sucursales respondan (sp_testlinkedserver). Si una no
+     responde, no se borra: no se puede asegurar que el producto no tenga ventas ahí.
+  3. Consulta en cada sucursal si el producto tiene ventas, pedidos, movimientos
+     o inventario. Esas consultas van en sp_executesql para que solo se compilen
+     si la sucursal respondió.
+  4. Borra solo en el Corporativo; la replicación lo borra en las sucursales.
+  Las consultas remotas van antes de la transacción, para que no se convierta
+  en una transacción distribuida (MSDTC).
+*/
+CREATE OR ALTER PROCEDURE EliminarProducto
+  @ID_Producto int
+AS
+BEGIN
+  SET XACT_ABORT ON
+  DECLARE @usos_sanjose int
+  DECLARE @usos_limon int
+  DECLARE @sql nvarchar(MAX)
+  BEGIN TRY
+
+    IF NOT EXISTS (SELECT 1 FROM productos p WHERE p.StockItemID = @ID_Producto)
+    BEGIN
+      THROW 50017, 'El producto indicado no existe', 1
+    END
+
+    -- 1. Validaciones en el Corporativo
+    IF EXISTS (SELECT 1 FROM detalle_ordenes d WHERE d.StockItemID = @ID_Producto)
+    BEGIN
+      THROW 50019, 'El producto indicado se encuentra asociado a una orden de compra', 1
+    END
+
+    IF EXISTS (SELECT 1 FROM transacciones_productos t WHERE t.StockItemID = @ID_Producto)
+    BEGIN
+      THROW 50022, 'El producto indicado se encuentra asociado a una transacción', 1
+    END
+
+    IF EXISTS (SELECT 1 FROM ofertas o WHERE o.StockItemID = @ID_Producto)
+    BEGIN
+      THROW 50021, 'El producto indicado se encuentra asociado a una oferta especial', 1
+    END
+
+    -- 2. ¿Responden las dos sucursales?
+    BEGIN TRY
+      EXEC sp_testlinkedserver N'SANJOSE'
+    END TRY
+    BEGIN CATCH
+      THROW 50023, 'No se puede eliminar: la sucursal San José no responde', 1
+    END CATCH
+
+    BEGIN TRY
+      EXEC sp_testlinkedserver N'LIMON'
+    END TRY
+    BEGIN CATCH
+      THROW 50024, 'No se puede eliminar: la sucursal Limón no responde', 1
+    END CATCH
+
+    -- 3. ¿Tiene ventas, pedidos, movimientos o inventario en las sucursales?
+    SET @sql = N'
+      SELECT @usos =
+          (SELECT COUNT(*) FROM SANJOSE.WWI_SanJose.Sales.InvoiceLines WHERE StockItemID = @id)
+        + (SELECT COUNT(*) FROM SANJOSE.WWI_SanJose.Sales.OrderLines WHERE StockItemID = @id)
+        + (SELECT COUNT(*) FROM SANJOSE.WWI_SanJose.Warehouse.StockItemTransactions WHERE StockItemID = @id)
+        + (SELECT COUNT(*) FROM SANJOSE.WWI_SanJose.Warehouse.StockItemHoldings WHERE StockItemID = @id AND QuantityOnHand > 0)'
+    EXEC sp_executesql @sql, N'@id int, @usos int OUTPUT', @id = @ID_Producto, @usos = @usos_sanjose OUTPUT
+
+    SET @sql = N'
+      SELECT @usos =
+          (SELECT COUNT(*) FROM LIMON.WWI_Limon.Sales.InvoiceLines WHERE StockItemID = @id)
+        + (SELECT COUNT(*) FROM LIMON.WWI_Limon.Sales.OrderLines WHERE StockItemID = @id)
+        + (SELECT COUNT(*) FROM LIMON.WWI_Limon.Warehouse.StockItemTransactions WHERE StockItemID = @id)
+        + (SELECT COUNT(*) FROM LIMON.WWI_Limon.Warehouse.StockItemHoldings WHERE StockItemID = @id AND QuantityOnHand > 0)'
+    EXEC sp_executesql @sql, N'@id int, @usos int OUTPUT', @id = @ID_Producto, @usos = @usos_limon OUTPUT
+
+    IF @usos_sanjose > 0
+    BEGIN
+      THROW 50025, 'El producto tiene ventas, pedidos o inventario en la sucursal San José', 1
+    END
+
+    IF @usos_limon > 0
+    BEGIN
+      THROW 50026, 'El producto tiene ventas, pedidos o inventario en la sucursal Limón', 1
+    END
+
+    -- 4. Borrar (solo en el Corporativo; la replicación lo lleva a las sucursales)
+    BEGIN TRANSACTION
+
+    DELETE FROM grupos_productos WHERE StockItemID = @ID_Producto
+    DELETE FROM productos WHERE StockItemID = @ID_Producto
+
+    COMMIT TRANSACTION
+    SELECT 'Producto eliminado correctamente' AS Resultado
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0
+      ROLLBACK TRANSACTION
+    SELECT
+      ERROR_NUMBER() AS NumeroError,
+      ERROR_MESSAGE() AS MensajeError,
+      ERROR_LINE() AS LineaError
+  END CATCH
+END
+GO
+
+-- Prueba #1: Crear un producto y ver que llega con inventario en 0
+USE WWI_Corporativo
+GO
+EXEC AgregarNuevoProducto
+  @Nombre_Producto = 'Producto Prueba P2', @ProveedorID = 1, @UnitPackageID = 7, @OuterPackageID = 7,
+  @QuantityPerOuter = 1, @TaxRate = 15, @UnitPrice = 10, @RecommendedPrice = 15,
+  @TypicalWeight = 0.5, @MarketingSearchDetails = 'Producto de prueba del Proyecto 2',
+  @Grupos_Productos = '1,2'

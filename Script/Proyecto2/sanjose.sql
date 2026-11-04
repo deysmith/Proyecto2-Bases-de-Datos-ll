@@ -509,3 +509,104 @@ GO
 -- Prueba de seguridad: el login de lectura no puede ver otras tablas del Corporativo
 SELECT TOP 1 * FROM CORPORATIVO.WWI_Corporativo.Purchasing.PurchaseOrders
 GO
+
+-- Comprobración PersonID
+SELECT PersonID, FullName FROM Application.People WHERE FullName = 'PagWeb'
+
+
+---------- Inventario propio de la sucursal ----------
+
+
+USE WWI_SanJose
+GO
+
+/*
+   Si el Corporativo elimina un producto, la replicación lo borra aquí.
+   ON DELETE CASCADE borra también su registro de inventario de esta sucursal
+   (si no, la llave foránea haría fallar la replicación).
+*/
+ALTER TABLE Warehouse.StockItemHoldings
+DROP CONSTRAINT PKFK_Warehouse_StockItemHoldings_StockItemID_Warehouse_StockItems
+
+ALTER TABLE Warehouse.StockItemHoldings
+ADD CONSTRAINT PKFK_Warehouse_StockItemHoldings_StockItemID_Warehouse_StockItems
+FOREIGN KEY (StockItemID) REFERENCES Warehouse.StockItems (StockItemID)
+ON DELETE CASCADE
+GO
+
+/*
+   Trigger: cuando llega un producto nuevo por replicación desde el Corporativo,
+   se le crea su registro de inventario en esta sucursal con cantidad 0.
+*/
+CREATE OR ALTER TRIGGER Warehouse.trg_ProductoNuevo_Inventario
+ON Warehouse.StockItems
+AFTER INSERT
+AS
+BEGIN
+  SET NOCOUNT ON
+
+  INSERT INTO Warehouse.StockItemHoldings (
+    StockItemID, QuantityOnHand, BinLocation, LastStocktakeQuantity,
+    LastCostPrice, ReorderLevel, TargetStockLevel, LastEditedBy
+  )
+  SELECT i.StockItemID, 0, 'Sin asignar', 0, i.UnitPrice, 5, 20, i.LastEditedBy
+  FROM inserted i
+  WHERE NOT EXISTS (SELECT 1 FROM Warehouse.StockItemHoldings h WHERE h.StockItemID = i.StockItemID)
+END
+GO
+
+/*
+   ActualizarInventarioProducto: el administrador de la sucursal define la
+   cantidad y la ubicación en bodega de un producto en su sucursal.
+   El inventario no se replica: cada sucursal maneja el suyo.
+*/
+CREATE OR ALTER PROCEDURE dbo.ActualizarInventarioProducto
+  @ID_Producto int,
+  @QuantityOnHand int = NULL,
+  @BinLocation nvarchar(20) = NULL
+AS
+BEGIN
+  SET XACT_ABORT ON
+  DECLARE @PersonaEncargadaID int
+  BEGIN TRY
+    BEGIN TRANSACTION
+
+    IF @QuantityOnHand < 0
+    BEGIN
+      THROW 50042, 'La cantidad en inventario no puede ser negativa', 1
+    END
+
+    SELECT @PersonaEncargadaID = PersonID FROM personas WHERE FullName = 'PagWeb'
+
+    UPDATE inventario_productos
+    SET QuantityOnHand = ISNULL(@QuantityOnHand, QuantityOnHand),
+        BinLocation = ISNULL(@BinLocation, BinLocation),
+        LastEditedBy = @PersonaEncargadaID,
+        LastEditedWhen = SYSDATETIME()
+    WHERE StockItemID = @ID_Producto
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+      THROW 50041, 'El producto no tiene inventario en esta sucursal (si es nuevo, espere unos segundos a que llegue por replicación)', 1
+    END
+
+    COMMIT TRANSACTION
+    SELECT StockItemID, QuantityOnHand, BinLocation
+    FROM inventario_productos WHERE StockItemID = @ID_Producto
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0
+      ROLLBACK TRANSACTION
+    SELECT
+      ERROR_NUMBER() AS NumeroError,
+      ERROR_MESSAGE() AS MensajeError,
+      ERROR_LINE() AS LineaError
+  END CATCH
+END
+GO
+
+-- Prueba #1: Crear un producto y ver que llega con inventario en 0
+SELECT p.StockItemID, p.StockItemName, h.QuantityOnHand, h.BinLocation
+FROM Warehouse.StockItems p
+LEFT JOIN Warehouse.StockItemHoldings h ON h.StockItemID = p.StockItemID
+WHERE p.StockItemName = 'Producto Prueba P2'
