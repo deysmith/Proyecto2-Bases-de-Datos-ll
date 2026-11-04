@@ -610,3 +610,11 @@ SELECT p.StockItemID, p.StockItemName, h.QuantityOnHand, h.BinLocation
 FROM Warehouse.StockItems p
 LEFT JOIN Warehouse.StockItemHoldings h ON h.StockItemID = p.StockItemID
 WHERE p.StockItemName = 'Producto Prueba P2'
+
+-- Inventario Propio de San José
+DECLARE @id int = (SELECT StockItemID FROM Warehouse.StockItems WHERE StockItemName = 'Producto Prueba P2')
+EXEC dbo.ActualizarInventarioProducto @ID_Producto = @id, @QuantityOnHand = 10, @BinLocation = 'A-01'
+
+-- Modificar inventario para que el Corporativo pueda eliminar
+DECLARE @id int = (SELECT StockItemID FROM Warehouse.StockItems WHERE StockItemName = 'Producto Prueba P2')
+EXEC dbo.ActualizarInventarioProducto @ID_Producto = @id, @QuantityOnHand = 0

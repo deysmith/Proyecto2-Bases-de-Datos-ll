@@ -1141,3 +1141,14 @@ EXEC AgregarNuevoProducto
   @QuantityPerOuter = 1, @TaxRate = 15, @UnitPrice = 10, @RecommendedPrice = 15,
   @TypicalWeight = 0.5, @MarketingSearchDetails = 'Producto de prueba del Proyecto 2',
   @Grupos_Productos = '1,2'
+
+-- Intentar eliminar un producto con inventario en una sucursal
+DECLARE @id int = (SELECT StockItemID FROM Warehouse.StockItems WHERE StockItemName = 'Producto Prueba P2')
+EXEC EliminarProducto @ID_Producto = @id
+
+-- Intentar eliminar un producto con ventas
+EXEC EliminarProducto @ID_Producto = 1
+
+-- Probar con una sucursal caida
+DECLARE @id int = (SELECT StockItemID FROM Warehouse.StockItems WHERE StockItemName = 'Producto Prueba P2')
+EXEC EliminarProducto @ID_Producto = @id
