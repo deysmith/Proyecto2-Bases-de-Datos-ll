@@ -1152,3 +1152,25 @@ EXEC EliminarProducto @ID_Producto = 1
 -- Probar con una sucursal caida
 DECLARE @id int = (SELECT StockItemID FROM Warehouse.StockItems WHERE StockItemName = 'Producto Prueba P2')
 EXEC EliminarProducto @ID_Producto = @id
+
+
+---------- Permisos del rol Administrador en el Corporativo ----------
+
+
+/*
+   Los administradores de sucursal modifican el catálogo de productos en el
+   Corporativo (único maestro). La API usa este login, que solo puede ejecutar
+   los 3 SPs de productos.
+*/
+USE WWI_Corporativo
+GO
+CREATE LOGIN api_productos
+WITH PASSWORD = 'ApiProductos*2026', CHECK_POLICY = OFF, DEFAULT_DATABASE = WWI_Corporativo
+GO
+CREATE USER api_productos FOR LOGIN api_productos
+CREATE ROLE rol_administrador
+ALTER ROLE rol_administrador ADD MEMBER api_productos
+GRANT EXECUTE ON AgregarNuevoProducto TO rol_administrador
+GRANT EXECUTE ON EditarDatosProducto TO rol_administrador
+GRANT EXECUTE ON EliminarProducto TO rol_administrador
+GO
