@@ -618,3 +618,12 @@ EXEC dbo.ActualizarInventarioProducto @ID_Producto = @id, @QuantityOnHand = 10, 
 -- Modificar inventario para que el Corporativo pueda eliminar
 DECLARE @id int = (SELECT StockItemID FROM Warehouse.StockItems WHERE StockItemName = 'Producto Prueba P2')
 EXEC dbo.ActualizarInventarioProducto @ID_Producto = @id, @QuantityOnHand = 0
+
+-- Prueba #1 fragmentación reconstruida: Detalle completo de un cliente
+USE WWI_SanJose
+GO
+DECLARE @id int = (SELECT TOP 1 CustomerID FROM Sales.Customers WHERE Sucursal = 'SanJose' ORDER BY CustomerID)
+EXEC ObtenerDatosProveedor @ID_Proveedor = 1
+
+-- Prueba #2: La versión del producto
+EXEC ObtenerDatosProducto @ID_Producto = 1

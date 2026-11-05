@@ -1174,3 +1174,6 @@ GRANT EXECUTE ON AgregarNuevoProducto TO rol_administrador
 GRANT EXECUTE ON EditarDatosProducto TO rol_administrador
 GRANT EXECUTE ON EliminarProducto TO rol_administrador
 GO
+
+-- Prueba #2: La versión del producto
+SELECT CONVERT(varchar(27), ValidFrom, 121) AS Version FROM Warehouse.StockItems WHERE StockItemID = 1
