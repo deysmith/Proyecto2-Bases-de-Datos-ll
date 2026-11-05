@@ -578,3 +578,14 @@ SELECT p.StockItemID, p.StockItemName, h.QuantityOnHand, h.BinLocation
 FROM Warehouse.StockItems p
 LEFT JOIN Warehouse.StockItemHoldings h ON h.StockItemID = p.StockItemID
 WHERE p.StockItemName = 'Producto Prueba P2'
+
+-- Prueba #3: “Tiempo real”: una venta nueva en Limón llega a las estadísticas
+USE WWI_Limon
+GO
+DECLARE @cliente int = (SELECT TOP 1 CustomerID FROM Sales.Customers WHERE Sucursal = 'Limon')
+EXEC CrearFactura
+  @ID_Cliente = @cliente, @ID_BillToCustomer = @cliente, @ID_MetodoEntrega = 3,
+  @ID_PersonaContacto = 2, @ID_PersonaCuenta = 2, @ID_Vendedor = 2, @ID_Empacador = 3,
+  @ID_Producto = 1, @Cantidad = 5
+
+EXEC EliminarFactura 2000000

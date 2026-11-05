@@ -1177,3 +1177,275 @@ GO
 
 -- Prueba #2: La versión del producto
 SELECT CONVERT(varchar(27), ValidFrom, 121) AS Version FROM Warehouse.StockItems WHERE StockItemID = 1
+
+
+---------- Vista materializada de ventas (estadísticas del Corporativo) ----------
+
+
+/*
+   SQL Server no permite vistas indexadas (vistas materializadas) sobre tablas
+   de otros servidores. Se usa lo "similar": tablas resumen en el Corporativo con una
+   copia de las ventas de las dos sucursales, que un job del SQL Server Agent refresca
+   cada 5 minutos (como un REFRESH MATERIALIZED VIEW).
+*/
+USE WWI_Corporativo
+GO
+
+-- Encabezados de las facturas de las dos sucursales
+CREATE TABLE dbo.ResumenFacturas (
+  InvoiceID int NOT NULL,
+  Sucursal nvarchar(20) NOT NULL,
+  CustomerID int NOT NULL,
+  DeliveryMethodID int NOT NULL,
+  InvoiceDate date NOT NULL,
+  CONSTRAINT PK_ResumenFacturas PRIMARY KEY (InvoiceID)
+)
+
+-- Líneas de las facturas
+CREATE TABLE dbo.ResumenDetalleFacturas (
+  InvoiceLineID int NOT NULL,
+  InvoiceID int NOT NULL,
+  Sucursal nvarchar(20) NOT NULL,
+  StockItemID int NOT NULL,
+  Quantity int NOT NULL,
+  UnitPrice decimal(18, 2) NULL,
+  CONSTRAINT PK_ResumenDetalleFacturas PRIMARY KEY (InvoiceLineID)
+)
+
+-- Movimientos de inventario (ventas de las sucursales y compras del Corporativo)
+CREATE TABLE dbo.ResumenMovimientosInventario (
+  StockItemTransactionID int NOT NULL,
+  Sucursal nvarchar(20) NOT NULL, -- SanJose, Limon o Corporativo
+  StockItemID int NOT NULL,
+  Quantity decimal(18, 3) NOT NULL,
+  TransactionOccurredWhen datetime2(7) NOT NULL,
+  CONSTRAINT PK_ResumenMovimientosInventario PRIMARY KEY (StockItemTransactionID)
+)
+
+-- Control: cuándo se actualizó cada sucursal y si respondió
+CREATE TABLE dbo.ControlResumen (
+  Sucursal nvarchar(20) NOT NULL PRIMARY KEY,
+  UltimaActualizacion datetime2(0) NULL,
+  UltimoIntento datetime2(0) NULL,
+  Facturas int NULL,
+  Estado nvarchar(100) NOT NULL
+)
+
+INSERT INTO dbo.ControlResumen (Sucursal, Estado) VALUES
+  ('SanJose', 'Pendiente'),
+  ('Limon', 'Pendiente')
+GO
+
+-- Índices para que los reportes filtren rápido por sucursal, fecha, cliente y producto
+CREATE INDEX IX_ResumenFacturas_Sucursal ON dbo.ResumenFacturas (Sucursal, InvoiceDate)
+CREATE INDEX IX_ResumenFacturas_Cliente ON dbo.ResumenFacturas (CustomerID)
+CREATE INDEX IX_ResumenDetalleFacturas_Factura ON dbo.ResumenDetalleFacturas (InvoiceID) INCLUDE (StockItemID, Quantity, UnitPrice)
+CREATE INDEX IX_ResumenDetalleFacturas_Producto ON dbo.ResumenDetalleFacturas (StockItemID)
+CREATE INDEX IX_ResumenMovimientos_Producto ON dbo.ResumenMovimientosInventario (StockItemID, Sucursal)
+GO
+
+/*
+  ActualizarResumenSucursal: refresca el corte de una sucursal.
+  1. Si la sucursal no responde, se deja su último corte y se anota en ControlResumen.
+  2. Los datos se traen primero a tablas temporales, fuera de la transacción
+     (así no se necesita una transacción distribuida / MSDTC).
+  3. En una sola transacción se reemplaza el corte anterior: todo o nada.
+*/
+CREATE OR ALTER PROCEDURE dbo.ActualizarResumenSucursal
+  @Sucursal nvarchar(20) -- 'SanJose' o 'Limon'
+AS
+BEGIN
+  SET NOCOUNT ON
+  SET XACT_ABORT ON
+
+  DECLARE @servidor sysname
+  DECLARE @origen nvarchar(200)
+  DECLARE @sql nvarchar(MAX)
+
+  SET @servidor = CASE @Sucursal WHEN 'SanJose' THEN N'SANJOSE' WHEN 'Limon' THEN N'LIMON' END
+
+  IF @servidor IS NULL
+  BEGIN
+    THROW 50050, 'La sucursal indicada no es válida', 1
+  END
+
+  SET @origen = @servidor + N'.WWI_' + @Sucursal -- por ejemplo SANJOSE.WWI_SanJose
+
+  -- 1. ¿Responde la sucursal?
+  BEGIN TRY
+    EXEC sp_testlinkedserver @servidor
+  END TRY
+  BEGIN CATCH
+    UPDATE dbo.ControlResumen
+    SET UltimoIntento = SYSDATETIME(),
+        Estado = 'Sin conexión: se mantienen los datos del último corte'
+    WHERE Sucursal = @Sucursal
+    RETURN
+  END CATCH
+
+  -- 2. Traer los datos de la sucursal (fuera de la transacción)
+  CREATE TABLE #facturas (InvoiceID int, CustomerID int, DeliveryMethodID int, InvoiceDate date)
+  CREATE TABLE #detalle (InvoiceLineID int, InvoiceID int, StockItemID int, Quantity int, UnitPrice decimal(18, 2))
+  CREATE TABLE #movimientos (StockItemTransactionID int, StockItemID int, Quantity decimal(18, 3), TransactionOccurredWhen datetime2(7))
+
+  SET @sql = N'INSERT INTO #facturas SELECT InvoiceID, CustomerID, DeliveryMethodID, InvoiceDate FROM '
+           + @origen + N'.Sales.Invoices'
+  EXEC (@sql)
+
+  SET @sql = N'INSERT INTO #detalle SELECT InvoiceLineID, InvoiceID, StockItemID, Quantity, UnitPrice FROM '
+           + @origen + N'.Sales.InvoiceLines'
+  EXEC (@sql)
+
+  SET @sql = N'INSERT INTO #movimientos SELECT StockItemTransactionID, StockItemID, Quantity, TransactionOccurredWhen FROM '
+           + @origen + N'.Warehouse.StockItemTransactions'
+  EXEC (@sql)
+
+  -- 3. Reemplazar el corte anterior de esta sucursal (todo o nada)
+  BEGIN TRANSACTION
+
+  -- Si el job y un usuario refrescan al mismo tiempo, uno espera al otro
+  EXEC sp_getapplock @Resource = N'ResumenVentas', @LockMode = N'Exclusive'
+
+  DELETE FROM dbo.ResumenDetalleFacturas WHERE Sucursal = @Sucursal
+  DELETE FROM dbo.ResumenFacturas WHERE Sucursal = @Sucursal
+  DELETE FROM dbo.ResumenMovimientosInventario WHERE Sucursal = @Sucursal
+
+  INSERT INTO dbo.ResumenFacturas (InvoiceID, Sucursal, CustomerID, DeliveryMethodID, InvoiceDate)
+  SELECT InvoiceID, @Sucursal, CustomerID, DeliveryMethodID, InvoiceDate FROM #facturas
+
+  INSERT INTO dbo.ResumenDetalleFacturas (InvoiceLineID, InvoiceID, Sucursal, StockItemID, Quantity, UnitPrice)
+  SELECT InvoiceLineID, InvoiceID, @Sucursal, StockItemID, Quantity, UnitPrice FROM #detalle
+
+  INSERT INTO dbo.ResumenMovimientosInventario (StockItemTransactionID, Sucursal, StockItemID, Quantity, TransactionOccurredWhen)
+  SELECT StockItemTransactionID, @Sucursal, StockItemID, Quantity, TransactionOccurredWhen FROM #movimientos
+
+  UPDATE dbo.ControlResumen
+  SET UltimaActualizacion = SYSDATETIME(),
+      UltimoIntento = SYSDATETIME(),
+      Facturas = (SELECT COUNT(*) FROM #facturas),
+      Estado = 'Actualizado'
+  WHERE Sucursal = @Sucursal
+
+  COMMIT TRANSACTION
+END
+GO
+
+/*
+  ActualizarResumenVentas: refresca toda la vista materializada.
+  Lo ejecuta el job cada 5 minutos; también se puede llamar a mano
+  (por ejemplo desde un botón "Actualizar" en las estadísticas).
+  Si una sucursal falla, la otra se actualiza igual.
+*/
+CREATE OR ALTER PROCEDURE dbo.ActualizarResumenVentas
+AS
+BEGIN
+  SET NOCOUNT ON
+
+  -- Movimientos propios del Corporativo (compras a proveedores), para la rotación consolidada
+  BEGIN TRANSACTION
+  EXEC sp_getapplock @Resource = N'ResumenVentas', @LockMode = N'Exclusive'
+
+  DELETE FROM dbo.ResumenMovimientosInventario WHERE Sucursal = 'Corporativo'
+
+  INSERT INTO dbo.ResumenMovimientosInventario (StockItemTransactionID, Sucursal, StockItemID, Quantity, TransactionOccurredWhen)
+  SELECT StockItemTransactionID, 'Corporativo', StockItemID, Quantity, TransactionOccurredWhen
+  FROM Warehouse.StockItemTransactions
+  COMMIT TRANSACTION
+
+  -- San José
+  BEGIN TRY
+    EXEC dbo.ActualizarResumenSucursal 'SanJose'
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION
+    UPDATE dbo.ControlResumen
+    SET UltimoIntento = SYSDATETIME(), Estado = 'Error: ' + LEFT(ERROR_MESSAGE(), 90)
+    WHERE Sucursal = 'SanJose'
+  END CATCH
+
+  -- Limón
+  BEGIN TRY
+    EXEC dbo.ActualizarResumenSucursal 'Limon'
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION
+    UPDATE dbo.ControlResumen
+    SET UltimoIntento = SYSDATETIME(), Estado = 'Error: ' + LEFT(ERROR_MESSAGE(), 90)
+    WHERE Sucursal = 'Limon'
+  END CATCH
+
+  SELECT Sucursal, UltimaActualizacion, UltimoIntento, Facturas, Estado FROM dbo.ControlResumen
+END
+GO
+
+/*
+  ObtenerEstadoResumen: para mostrar en el Website "Datos actualizados al ..."
+  y avisar si alguna sucursal no respondió.
+*/
+CREATE OR ALTER PROCEDURE dbo.ObtenerEstadoResumen
+AS
+BEGIN
+  SELECT Sucursal, UltimaActualizacion, UltimoIntento, Facturas, Estado
+  FROM dbo.ControlResumen
+END
+GO
+
+-- Carga inicial de la vista materializada
+EXEC dbo.ActualizarResumenVentas
+GO
+
+/*
+  Job del SQL Server Agent: refresca la vista materializada cada 5 minutos
+*/
+USE msdb
+GO
+EXEC dbo.sp_add_job
+  @job_name = N'WWI - Actualizar resumen de ventas',
+  @description = N'Refresca la vista materializada de ventas del Corporativo con los datos de San José y Limón'
+
+EXEC dbo.sp_add_jobstep
+  @job_name = N'WWI - Actualizar resumen de ventas',
+  @step_name = N'ActualizarResumenVentas',
+  @subsystem = N'TSQL',
+  @database_name = N'WWI_Corporativo',
+  @command = N'EXEC dbo.ActualizarResumenVentas'
+
+EXEC dbo.sp_add_schedule
+  @schedule_name = N'Cada 5 minutos',
+  @freq_type = 4, -- diario
+  @freq_interval = 1, -- todos los días
+  @freq_subday_type = 4, -- en minutos
+  @freq_subday_interval = 5 -- cada 5 minutos
+
+EXEC dbo.sp_attach_schedule
+  @job_name = N'WWI - Actualizar resumen de ventas',
+  @schedule_name = N'Cada 5 minutos'
+
+EXEC dbo.sp_add_jobserver
+  @job_name = N'WWI - Actualizar resumen de ventas'
+GO
+
+-- Pruebas --
+-- #1: La vista materializada cuadra con las sucursales
+SELECT
+  CASE WHEN GROUPING(f.Sucursal) = 1 THEN 'Consolidado' ELSE f.Sucursal END AS Sucursal,
+  COUNT(DISTINCT f.InvoiceID) AS facturas,
+  SUM(df.Quantity * df.UnitPrice) AS ventas
+FROM dbo.ResumenFacturas f
+INNER JOIN dbo.ResumenDetalleFacturas df ON df.InvoiceID = f.InvoiceID
+GROUP BY ROLLUP (f.Sucursal)
+
+-- #2: Un reporte, tres vistas
+EXEC ObtenerTopCincoClientes @InicioRango = 2016, @Sucursal = 'SanJose'
+EXEC ObtenerTopCincoClientes @InicioRango = 2016, @Sucursal = 'Limon'
+EXEC ObtenerTopCincoClientes @InicioRango = 2016
+
+EXEC ResumenDeVentaPorCategoria @Sucursal = 'SanJose'
+EXEC ResumenDeVentaPorCategoria
+
+-- #3: “Tiempo real”: una venta nueva en Limón llega a las estadísticas
+EXEC dbo.ActualizarResumenVentas
+
+-- #4: Una sucursal caída
+EXEC dbo.ActualizarResumenVentas
+EXEC ObtenerTopCincoClientes @InicioRango = 2016, @Sucursal = 'Limon'

@@ -1,7 +1,7 @@
--- Este archivo se ejecuta en las 2 sucursales (WWI_SanJose y WWI_Limon)
-IF DB_NAME() NOT IN ('WWI_SanJose', 'WWI_Limon')
+-- Este archivo se ejecuta en los 3 nodos
+IF DB_NAME() NOT IN ('WWI_Corporativo', 'WWI_SanJose', 'WWI_Limon')
 BEGIN
-  PRINT 'ERROR: está en la base ' + DB_NAME() + '. Elija WWI_SanJose o WWI_Limon.'
+  PRINT 'ERROR: está en la base ' + DB_NAME() + '. Elija WWI_Corporativo, WWI_SanJose o WWI_Limon.'
   SET NOEXEC ON
 END
 GO
