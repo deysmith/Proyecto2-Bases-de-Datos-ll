@@ -50,7 +50,7 @@ router.get('/', async (req, res) => {
   try {
     const { pagina, cantidad } = leerPaginacion(req.query);
 
-    const filas = await ejecutarSP('GetFacturas', [
+    const filas = await ejecutarSP(req.nodo, 'GetFacturas', [
       { nombre: 'NumeroPagina', tipo: sql.Int, valor: pagina },
       { nombre: 'CantidadRegistros', tipo: sql.Int, valor: cantidad }
     ]);
@@ -70,7 +70,7 @@ router.get('/buscar', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Las fechas deben tener el formato AAAA-MM-DD' });
     }
 
-    const filas = await ejecutarSP('BuscarFacturas', [
+    const filas = await ejecutarSP(req.nodo, 'BuscarFacturas', [
       { nombre: 'Nombre_Cliente', tipo: sql.NVarChar(100), valor: req.query.cliente },
       { nombre: 'FechaInicio', tipo: sql.Date, valor: aFecha(req.query.fechaInicio) },
       { nombre: 'FechaFin', tipo: sql.Date, valor: aFecha(req.query.fechaFin) },
@@ -95,7 +95,7 @@ router.get('/:id', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'El número de factura no es válido' });
     }
 
-    const filas = await ejecutarSP('ObtenerEncabezadoFactura', [
+    const filas = await ejecutarSP(req.nodo, 'ObtenerEncabezadoFactura', [
       { nombre: 'Numero_Factura', tipo: sql.Int, valor: id }
     ]);
 
@@ -118,7 +118,7 @@ router.get('/:id/detalle', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'El número de factura no es válido' });
     }
 
-    const filas = await ejecutarSP('ObtenerDetalleFactura', [
+    const filas = await ejecutarSP(req.nodo, 'ObtenerDetalleFactura', [
       { nombre: 'Numero_Factura', tipo: sql.Int, valor: id }
     ]);
 
@@ -139,7 +139,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Faltan campos obligatorios', faltantes });
     }
 
-    const filas = await ejecutarSP('CrearFactura', armarParametros(camposCrear, req.body));
+    const filas = await ejecutarSP(req.nodo, 'CrearFactura', armarParametros(camposCrear, req.body));
 
     if (hayError(filas)) {
       return responderError(res, filas[0]);
@@ -163,7 +163,7 @@ router.put('/:id', async (req, res) => {
     const parametros = armarParametros(camposEditar, req.body);
     parametros.push({ nombre: 'ID_Factura', tipo: sql.Int, valor: id });
 
-    const filas = await ejecutarSP('EditarDatosFactura', parametros);
+    const filas = await ejecutarSP(req.nodo, 'EditarDatosFactura', parametros);
 
     if (hayError(filas)) {
       return responderError(res, filas[0]);
@@ -184,7 +184,7 @@ router.delete('/:id', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'El número de factura no es válido' });
     }
 
-    const filas = await ejecutarSP('EliminarFactura', [
+    const filas = await ejecutarSP(req.nodo, 'EliminarFactura', [
       { nombre: 'ID_Factura', tipo: sql.Int, valor: id }
     ]);
 
