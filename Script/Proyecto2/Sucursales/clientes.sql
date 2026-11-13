@@ -27,7 +27,8 @@ BEGIN
       c.CustomerName,
       cc.CustomerCategoryName,
       me.DeliveryMethodName,
-      ci.CityName
+      ci.CityName,
+      c.Sucursal
     FROM clientes c
     INNER JOIN categorias_clientes cc on cc.CustomerCategoryID = c.CustomerCategoryID
     INNER JOIN  metodos_entrega me on me.DeliveryMethodID = c.DeliveryMethodID
@@ -69,7 +70,8 @@ BEGIN
       c.CustomerName,
       cc.CustomerCategoryName,
       me.DeliveryMethodName,
-      ci.CityName
+      ci.CityName,
+      c.Sucursal
     FROM clientes c
     INNER JOIN categorias_clientes cc on cc.CustomerCategoryID = c.CustomerCategoryID
     INNER JOIN  metodos_entrega me on me.DeliveryMethodID = c.DeliveryMethodID
