@@ -1,6 +1,5 @@
 import { createTheme } from '@mui/material/styles';
 
-// Paleta: 60% neutros (fondo claro), 30% azul (menú y encabezados), 10% verde azulado (acentos)
 const tema = createTheme({
   palette: {
     primary: { main: '#1F4E79' },

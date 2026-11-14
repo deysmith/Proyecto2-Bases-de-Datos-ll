@@ -4,7 +4,7 @@ const CLAVE = 'sesionWWI';
 
 export function guardarSesion(sesion) {
   try {
-    localStorage.setItem(CLAVE, JSON.stringify(sesion));
+    sessionStorage.setItem(CLAVE, JSON.stringify(sesion));
   } catch {
     // Si no se puede guardar, la sesión solo dura mientras no se recargue la página
   }
@@ -12,7 +12,7 @@ export function guardarSesion(sesion) {
 
 export function obtenerSesion() {
   try {
-    const texto = localStorage.getItem(CLAVE);
+    const texto = sessionStorage.getItem(CLAVE);
     return texto ? JSON.parse(texto) : null;
   } catch {
     return null;
@@ -21,7 +21,7 @@ export function obtenerSesion() {
 
 export function borrarSesion() {
   try {
-    localStorage.removeItem(CLAVE);
+    sessionStorage.removeItem(CLAVE);
   } catch {
     // Nada que hacer
   }
