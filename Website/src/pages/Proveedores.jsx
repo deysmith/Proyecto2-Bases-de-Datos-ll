@@ -6,18 +6,13 @@ import {
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
-import DeleteIcon from '@mui/icons-material/Delete';
-import AddIcon from '@mui/icons-material/Add';
-import EditIcon from '@mui/icons-material/Edit';
 import { pedir, armarQuery } from '../api';
 import EncabezadoPagina from '../components/EncabezadoPagina';
 import TablaDatos from '../components/TablaDatos';
 import Paginacion from '../components/Paginacion';
 import Aviso from '../components/Aviso';
-import ConfirmarDialogo from '../components/ConfirmarDialogo';
 import CampoDetalle from '../components/CampoDetalle';
 import Mapa from '../components/Mapa';
-import ProveedorFormulario from '../components/ProveedorFormulario';
 
 const filtrosVacios = { nombre: '', categoriaId: '', metodoEntregaId: '' };
 
@@ -42,13 +37,9 @@ function Proveedores() {
   const [error, setError] = useState('');
   const [recarga, setRecarga] = useState(0);
 
-  // Ventana de detalle, formulario y borrado
+  // Ventana de detalle
   const [detalleAbierto, setDetalleAbierto] = useState(false);
   const [detalle, setDetalle] = useState(null);
-  const [formularioAbierto, setFormularioAbierto] = useState(false);
-  const [proveedorEnEdicion, setProveedorEnEdicion] = useState(null);
-  const [confirmarBorrado, setConfirmarBorrado] = useState(false);
-  const [borrando, setBorrando] = useState(false);
 
   const [aviso, setAviso] = useState(null);
 
@@ -134,51 +125,13 @@ function Proveedores() {
     }
   }
 
-  function abrirNuevo() {
-    setProveedorEnEdicion(null);
-    setFormularioAbierto(true);
-  }
-
-  function abrirEdicion() {
-    setProveedorEnEdicion(detalle);
-    setFormularioAbierto(true);
-  }
-
-  function alGuardarProveedor(mensaje) {
-    setFormularioAbierto(false);
-    setDetalleAbierto(false);
-    setAviso({ tipo: 'success', texto: mensaje });
-    setRecarga((valor) => valor + 1);
-  }
-
-  async function borrarProveedor() {
-    setBorrando(true);
-
-    try {
-      await pedir('/api/proveedores/' + detalle.SupplierID, { method: 'DELETE' });
-      setAviso({ tipo: 'success', texto: 'El proveedor se eliminó correctamente.' });
-      setDetalleAbierto(false);
-      setRecarga((valor) => valor + 1);
-    } catch (e) {
-      setAviso({ tipo: 'error', texto: e.message });
-    } finally {
-      setConfirmarBorrado(false);
-      setBorrando(false);
-    }
-  }
-
   const punto = detalle?.DeliveryLocation?.points?.[0];
 
   return (
     <>
       <EncabezadoPagina
         titulo="Proveedores"
-        subtitulo="Consulte los proveedores registrados, filtre los resultados y administre su información."
-        accion={
-          <Button variant="contained" color="secondary" startIcon={<AddIcon />} onClick={abrirNuevo}>
-            Nuevo proveedor
-          </Button>
-        }
+        subtitulo="Consulte el catálogo de proveedores (es el mismo en todas las sedes), filtre los resultados y vea el detalle de cada uno."
       />
 
       <Paper sx={{ p: 2, mb: 3 }}>
@@ -303,6 +256,14 @@ function Proveedores() {
             </Box>
           ) : (
             <>
+              {/* Si el Corporativo no responde, los datos sensibles no se pueden mostrar */}
+              {detalle.DatosSensibles !== 'Disponible' && (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  {detalle.DatosSensibles}. Los datos de contacto, banco, dirección y ubicación se guardan
+                  en el Corporativo, por eso solo se muestran los datos que tiene esta sucursal.
+                </Alert>
+              )}
+
               <Box
                 sx={{
                   display: 'grid',
@@ -338,40 +299,12 @@ function Proveedores() {
         </DialogContent>
 
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button startIcon={<EditIcon />} disabled={!detalle} onClick={abrirEdicion}>
-            Editar
-          </Button>
-          <Button
-            color="error"
-            startIcon={<DeleteIcon />}
-            disabled={!detalle}
-            onClick={() => setConfirmarBorrado(true)}
-          >
-            Eliminar
-          </Button>
           <Box sx={{ flexGrow: 1 }} />
           <Button variant="contained" onClick={() => setDetalleAbierto(false)}>
             Cerrar
           </Button>
         </DialogActions>
       </Dialog>
-
-      <ProveedorFormulario
-        abierto={formularioAbierto}
-        proveedor={proveedorEnEdicion}
-        alCerrar={() => setFormularioAbierto(false)}
-        alGuardar={alGuardarProveedor}
-      />
-
-      <ConfirmarDialogo
-        abierto={confirmarBorrado}
-        titulo="Eliminar proveedor"
-        texto={`¿Seguro que desea eliminar a "${detalle ? detalle.SupplierName : ''}"? Esta acción no se puede deshacer.`}
-        textoBoton="Eliminar"
-        cargando={borrando}
-        alConfirmar={borrarProveedor}
-        alCancelar={() => setConfirmarBorrado(false)}
-      />
 
       <Aviso aviso={aviso} alCerrar={() => setAviso(null)} />
     </>

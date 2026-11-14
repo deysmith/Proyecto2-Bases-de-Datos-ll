@@ -18,6 +18,7 @@ import Aviso from '../components/Aviso';
 import ConfirmarDialogo from '../components/ConfirmarDialogo';
 import CampoDetalle from '../components/CampoDetalle';
 import FacturaFormulario from '../components/FacturaFormulario';
+import { obtenerSesion, nombresSedes } from '../sesion';
 
 const filtrosVacios = {
   cliente: '', fechaInicio: '', fechaFin: '', montoMinimo: '', montoMaximo: ''
@@ -208,7 +209,7 @@ function Ventas() {
     <>
       <EncabezadoPagina
         titulo="Ventas"
-        subtitulo="Consulte las facturas emitidas, filtre los resultados y administre las ventas."
+        subtitulo={`Facturas de la sucursal ${nombresSedes[obtenerSesion()?.usuario.nodo] || ''}: solo se le puede facturar a los clientes de esta sucursal.`}
         accion={
           <Button variant="contained" color="secondary" startIcon={<AddIcon />} onClick={abrirNueva}>
             Nueva factura

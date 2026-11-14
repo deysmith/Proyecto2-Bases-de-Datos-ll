@@ -18,16 +18,17 @@ import Aviso from '../components/Aviso';
 import ConfirmarDialogo from '../components/ConfirmarDialogo';
 import CampoDetalle from '../components/CampoDetalle';
 import ProductoFormulario from '../components/ProductoFormulario';
+import { nombresSedes } from '../sesion';
 
 const filtrosVacios = { nombre: '', grupoId: '', cantidadMinima: '', cantidadMaxima: '' };
 
 const columnas = [
   { campo: 'StockItemName', titulo: 'Producto' },
   { campo: 'Group', titulo: 'Grupo', formato: (valor) => valor || 'Sin grupo' },
-  { campo: 'QuantityOnHand', titulo: 'Cantidad en inventario', alinear: 'right', formato: entero }
+  { campo: 'QuantityOnHand', titulo: 'Cantidad en esta sucursal', alinear: 'right', formato: entero }
 ];
 
-function Inventario() {
+function Inventario({ usuario }) {
   const [parametros, setParametros] = useSearchParams();
 
   // Filtros: "filtros" es lo que el usuario escribe, "filtrosAplicados" es lo que se consultó
@@ -156,11 +157,22 @@ function Inventario() {
     setFormularioAbierto(true);
   }
 
-  function alGuardarProducto(mensaje) {
+  function alGuardarProducto(mensaje, tipo) {
     setFormularioAbierto(false);
     setDetalleAbierto(false);
-    setAviso({ tipo: 'success', texto: mensaje });
+    setAviso({ tipo, texto: mensaje });
     setRecarga((valor) => valor + 1);
+  }
+
+  // Cuando hay conflicto de concurrencia: se vuelven a pedir los datos (con la versión nueva)
+  async function recargarProducto() {
+    try {
+      const respuesta = await pedir('/api/productos/' + productoEnEdicion.StockItemID);
+      setDetalle(respuesta.datos);
+      setProductoEnEdicion(respuesta.datos);
+    } catch (e) {
+      setAviso({ tipo: 'error', texto: e.message });
+    }
   }
 
   async function borrarProducto() {
@@ -183,7 +195,7 @@ function Inventario() {
     <>
       <EncabezadoPagina
         titulo="Inventario"
-        subtitulo="Consulte los productos y su cantidad disponible, filtre los resultados y administre el inventario."
+        subtitulo={`Catálogo de productos (replicado en todas las sedes) con la cantidad disponible en la sucursal ${nombresSedes[usuario.nodo]}.`}
         accion={
           <Button variant="contained" color="secondary" startIcon={<AddIcon />} onClick={abrirNuevo}>
             Nuevo producto
@@ -340,8 +352,8 @@ function Inventario() {
                 <CampoDetalle titulo="Precio unitario" valor={dinero(detalle.UnitPrice)} />
                 <CampoDetalle titulo="Precio de venta recomendado" valor={dinero(detalle.RecommendedRetailPrice)} />
                 <CampoDetalle titulo="Peso" valor={`${detalle.TypicalWeightPerUnit} kg`} />
-                <CampoDetalle titulo="Cantidad disponible" valor={entero(detalle.QuantityOnHand)} />
-                <CampoDetalle titulo="Ubicación" valor={detalle.BinLocation} />
+                <CampoDetalle titulo={`Cantidad disponible en ${nombresSedes[usuario.nodo]}`} valor={entero(detalle.QuantityOnHand)} />
+                <CampoDetalle titulo="Ubicación en bodega" valor={detalle.BinLocation} />
               </Box>
 
               <CampoDetalle titulo="Palabras clave" valor={detalle.SearchDetails} />
@@ -373,12 +385,13 @@ function Inventario() {
         producto={productoEnEdicion}
         alCerrar={() => setFormularioAbierto(false)}
         alGuardar={alGuardarProducto}
+        alRecargar={recargarProducto}
       />
 
       <ConfirmarDialogo
         abierto={confirmarBorrado}
         titulo="Eliminar producto"
-        texto={`¿Seguro que desea eliminar "${detalle ? detalle.StockItemName : ''}"? Esta acción no se puede deshacer.`}
+        texto={`¿Seguro que desea eliminar "${detalle ? detalle.StockItemName : ''}"? Se eliminará del catálogo de todas las sedes. Solo se puede si no tiene ventas ni inventario en ninguna sucursal y las dos sucursales están en línea.`}
         textoBoton="Eliminar"
         cargando={borrando}
         alConfirmar={borrarProducto}

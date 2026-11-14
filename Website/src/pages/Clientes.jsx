@@ -1,30 +1,40 @@
 import { useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
-  Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
+  Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
   DialogTitle, MenuItem, Paper, TextField, Typography
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
-import DeleteIcon from '@mui/icons-material/Delete';
 import { pedir, armarQuery } from '../api';
+import { obtenerSesion, nombresSedes } from '../sesion';
 import EncabezadoPagina from '../components/EncabezadoPagina';
 import TablaDatos from '../components/TablaDatos';
 import Paginacion from '../components/Paginacion';
 import Aviso from '../components/Aviso';
-import ConfirmarDialogo from '../components/ConfirmarDialogo';
 import CampoDetalle from '../components/CampoDetalle';
 import Mapa from '../components/Mapa';
-import AddIcon from '@mui/icons-material/Add';
-import EditIcon from '@mui/icons-material/Edit';
-import ClienteFormulario from '../components/ClienteFormulario';
 
 const filtrosVacios = { nombre: '', categoriaId: '', metodoEntregaId: '' };
+
+// El catálogo de clientes es el mismo en las dos sucursales, pero cada cliente
+// pertenece a una sola (y solo ahí tiene sus facturas). Se marca con un chip.
+function chipSucursal(valor) {
+  const miSucursal = obtenerSesion()?.usuario.sucursal;
+  if (!valor) return '—';
+
+  return valor === miSucursal ? (
+    <Chip size="small" color="secondary" label="Esta sucursal" />
+  ) : (
+    <Chip size="small" variant="outlined" label={nombresSedes[valor] || valor} />
+  );
+}
 
 const columnas = [
   { campo: 'CustomerName', titulo: 'Cliente' },
   { campo: 'CustomerCategoryName', titulo: 'Categoría' },
-  { campo: 'DeliveryMethodName', titulo: 'Método de entrega' }
+  { campo: 'DeliveryMethodName', titulo: 'Método de entrega' },
+  { campo: 'Sucursal', titulo: 'Sucursal', formato: chipSucursal }
 ];
 
 function Clientes() {
@@ -45,15 +55,9 @@ function Clientes() {
   // Ventana de detalle
   const [detalleAbierto, setDetalleAbierto] = useState(false);
   const [detalle, setDetalle] = useState(null);
-  const [confirmarBorrado, setConfirmarBorrado] = useState(false);
-  const [borrando, setBorrando] = useState(false);
-  
+
   // Aviso general
   const [aviso, setAviso] = useState(null);
-
-  // Formulario de cliente
-  const [formularioAbierto, setFormularioAbierto] = useState(false);
-  const [clienteEnEdicion, setClienteEnEdicion] = useState(null);
 
   // Mantener los filtros en la URL para que se puedan compartir
   const [parametros, setParametros] = useSearchParams();
@@ -138,51 +142,13 @@ function Clientes() {
     }
   }
 
-  async function borrarCliente() {
-    setBorrando(true);
-
-    try {
-      await pedir('/api/clientes/' + detalle.CustomerID, { method: 'DELETE' });
-      setAviso({ tipo: 'success', texto: 'El cliente se eliminó correctamente.' });
-      setDetalleAbierto(false);
-      setRecarga((valor) => valor + 1);
-    } catch (e) {
-      setAviso({ tipo: 'error', texto: e.message });
-    } finally {
-      setConfirmarBorrado(false);
-      setBorrando(false);
-    }
-  }
-
-  function abrirNuevo() {
-    setClienteEnEdicion(null);
-    setFormularioAbierto(true);
-  }
-
-  function abrirEdicion() {
-    setClienteEnEdicion(detalle);
-    setFormularioAbierto(true);
-  }
-
-  function alGuardarCliente(mensaje) {
-    setFormularioAbierto(false);
-    setDetalleAbierto(false);
-    setAviso({ tipo: 'success', texto: mensaje });
-    setRecarga((valor) => valor + 1);
-  }
-
   const punto = detalle?.DeliveryLocation?.points?.[0];
 
   return (
     <>
       <EncabezadoPagina
         titulo="Clientes"
-        subtitulo="Consulte los clientes registrados, filtre los resultados y vea el detalle de cada uno."
-        accion={
-          <Button variant="contained" color="secondary" startIcon={<AddIcon />} onClick={abrirNuevo}>
-            Nuevo cliente
-          </Button>
-        }
+        subtitulo="Consulte el catálogo de clientes, filtre los resultados y vea el detalle de cada uno. Las facturas de cada cliente están en la sucursal a la que pertenece."
       />
 
       <Paper sx={{ p: 2, mb: 3 }}>
@@ -307,6 +273,14 @@ function Clientes() {
             </Box>
           ) : (
             <>
+              {/* Si el Corporativo no responde, los datos sensibles no se pueden mostrar */}
+              {detalle.DatosSensibles !== 'Disponible' && (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  {detalle.DatosSensibles}. Los datos de contacto, dirección y ubicación se guardan en
+                  el Corporativo, por eso solo se muestran los datos que tiene esta sucursal.
+                </Alert>
+              )}
+
               <Box
                 sx={{
                   display: 'grid',
@@ -316,6 +290,7 @@ function Clientes() {
                 }}
               >
                 <CampoDetalle titulo="Nombre del cliente" valor={detalle.CustomerName} />
+                <CampoDetalle titulo="Sucursal" valor={nombresSedes[detalle.Sucursal] || detalle.Sucursal} />
                 <CampoDetalle titulo="Categoría" valor={detalle.CustomerCategoryName} />
                 <CampoDetalle titulo="Grupo de compra" valor={detalle.BuyingGroupName} />
                 <CampoDetalle titulo="Cliente por facturar" valor={detalle.BillToCustomer} />
@@ -341,21 +316,6 @@ function Clientes() {
         </DialogContent>
 
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button
-            startIcon={<EditIcon />}
-            disabled={!detalle}
-            onClick={abrirEdicion}
-          >
-            Editar
-          </Button>
-          <Button
-            color="error"
-            startIcon={<DeleteIcon />}
-            disabled={!detalle}
-            onClick={() => setConfirmarBorrado(true)}
-          >
-            Eliminar
-          </Button>
           <Box sx={{ flexGrow: 1 }} />
           <Button variant="contained" onClick={() => setDetalleAbierto(false)}>
             Cerrar
@@ -363,21 +323,6 @@ function Clientes() {
         </DialogActions>
       </Dialog>
 
-      <ConfirmarDialogo
-        abierto={confirmarBorrado}
-        titulo="Eliminar cliente"
-        texto={`¿Seguro que desea eliminar a "${detalle ? detalle.CustomerName : ''}"? Esta acción no se puede deshacer.`}
-        textoBoton="Eliminar"
-        cargando={borrando}
-        alConfirmar={borrarCliente}
-        alCancelar={() => setConfirmarBorrado(false)}
-      />
-      <ClienteFormulario
-        abierto={formularioAbierto}
-        cliente={clienteEnEdicion}
-        alCerrar={() => setFormularioAbierto(false)}
-        alGuardar={alGuardarCliente}
-      />
       <Aviso aviso={aviso} alCerrar={() => setAviso(null)} />
     </>
   );

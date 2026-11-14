@@ -4,6 +4,7 @@ import {
   DialogContent, DialogTitle, MenuItem, TextField, Typography
 } from '@mui/material';
 import { pedir, armarQuery } from '../api';
+import { obtenerSesion, nombresSedes } from '../sesion';
 
 const valoresIniciales = {
   nombre: '', proveedorId: '', colorId: '', unidadId: '', empaqueId: '',
@@ -100,12 +101,14 @@ function Seccion({ titulo, children }) {
   );
 }
 
-function ProductoFormulario({ abierto, producto, alCerrar, alGuardar }) {
+function ProductoFormulario({ abierto, producto, alCerrar, alGuardar, alRecargar }) {
   const esEdicion = Boolean(producto);
+  const sede = nombresSedes[obtenerSesion()?.usuario.nodo] || '';
 
   const [valores, setValores] = useState(valoresIniciales);
   const [errores, setErrores] = useState({});
   const [errorApi, setErrorApi] = useState('');
+  const [conflicto, setConflicto] = useState(false);
   const [guardando, setGuardando] = useState(false);
 
   const [proveedores, setProveedores] = useState([]);
@@ -140,6 +143,7 @@ function ProductoFormulario({ abierto, producto, alCerrar, alGuardar }) {
       setValores(producto ? valoresDesde(producto) : valoresIniciales);
       setErrores({});
       setErrorApi('');
+      setConflicto(false);
     }
   }, [abierto, producto]);
 
@@ -220,20 +224,37 @@ function ProductoFormulario({ abierto, producto, alCerrar, alGuardar }) {
 
     if (!esEdicion) cuerpo.ProveedorID = Number(valores.proveedorId);
 
+    // Concurrencia optimista: se manda la versión que tenía el producto cuando se abrió
+    if (esEdicion) cuerpo.Version = producto.Version;
+
     setGuardando(true);
+    setConflicto(false);
     try {
+      let respuesta;
+      let mensaje;
+
       if (esEdicion) {
-        await pedir('/api/productos/' + producto.StockItemID, {
+        respuesta = await pedir('/api/productos/' + producto.StockItemID, {
           method: 'PUT',
           body: JSON.stringify(cuerpo)
         });
-        alGuardar('El producto se actualizó correctamente.');
+        mensaje = 'El producto se actualizó y se está replicando a las sucursales.';
       } else {
-        await pedir('/api/productos', { method: 'POST', body: JSON.stringify(cuerpo) });
-        alGuardar('El producto se creó correctamente.');
+        respuesta = await pedir('/api/productos', { method: 'POST', body: JSON.stringify(cuerpo) });
+        mensaje = 'El producto se creó y se está replicando a las sucursales.';
+      }
+
+      // La API avisa si el producto se guardó pero el inventario no se pudo asignar
+      if (respuesta.aviso) {
+        alGuardar(respuesta.aviso, 'warning');
+      } else {
+        alGuardar(mensaje, 'success');
       }
     } catch (e) {
-      if (e.estado === 409) {
+      if (e.codigo === 50040) {
+        // Otro administrador modificó el producto después de que se abrió el formulario
+        setConflicto(true);
+      } else if (e.codigo === 50002 || e.codigo === 50018) {
         setErrores({ nombre: e.message });
       } else {
         setErrorApi(e.message);
@@ -256,8 +277,25 @@ function ProductoFormulario({ abierto, producto, alCerrar, alGuardar }) {
       <DialogContent dividers>
         {errorApi && <Alert severity="error" sx={{ mb: 2 }}>{errorApi}</Alert>}
 
+        {conflicto && (
+          <Alert
+            severity="warning"
+            sx={{ mb: 2 }}
+            action={
+              <Button color="inherit" size="small" onClick={alRecargar}>
+                Cargar datos nuevos
+              </Button>
+            }
+          >
+            Otro administrador modificó este producto mientras usted lo editaba, por eso sus cambios no
+            se guardaron. Cargue los datos nuevos y vuelva a hacer los cambios. (Si todavía ve los datos
+            viejos, espere unos segundos a que llegue la replicación).
+          </Alert>
+        )}
+
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Los campos marcados con * son obligatorios.
+          Los campos marcados con * son obligatorios. El catálogo se guarda en el Corporativo y se
+          replica a todas las sucursales; la cantidad y la ubicación son solo de la sucursal {sede}.
         </Typography>
 
         <Seccion titulo="Datos del producto">
@@ -289,7 +327,7 @@ function ProductoFormulario({ abierto, producto, alCerrar, alGuardar }) {
           {campo('impuesto', 'Impuesto (%)', { obligatorio: true, maximo: 7, numerico: true, ayuda: 'Entre 0 y 100' })}
         </Seccion>
 
-        <Seccion titulo="Inventario">
+        <Seccion titulo={`Inventario en ${sede}`}>
           {campo('cantidadDisponible', 'Cantidad disponible', { obligatorio: true, maximo: 9 })}
           {campo('ubicacion', 'Ubicación', { obligatorio: true, maximo: 20, ayuda: 'Ejemplo: A-01' })}
         </Seccion>

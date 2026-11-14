@@ -17,8 +17,6 @@ async function cargarAnios() {
     .map((anio) => ({ valor: anio, texto: String(anio) }));
 }
 
-const anios = await cargarAnios();
-
 // Devuelve una función que carga las opciones de un selector desde la API
 function cargarOpciones(ruta, campoId, campoNombre) {
   return async () => {
@@ -78,6 +76,10 @@ const columnasMontos = [
   { campo: 'Promedio', titulo: 'Promedio', alinear: 'right', formato: dinero }
 ];
 
+/*
+  Definición de los reportes disponibles en la aplicación.
+  Cada reporte tiene un ID único, un título, una descripción, una ruta de API, filtros y columnas.
+*/
 export const reportes = [
   {
     id: 'compras-proveedores',
@@ -101,6 +103,7 @@ export const reportes = [
     titulo: 'Ventas por cliente',
     descripcion: 'Montos más alto, más bajo y venta promedio de cada cliente, agrupados por cliente y categoría.',
     ruta: '/api/reportes/ventas-clientes',
+    porSucursal: true,
     paginado: true,
     filtros: [
       { clave: 'cliente', etiqueta: 'Nombre del cliente', tipo: 'texto' },
@@ -118,6 +121,7 @@ export const reportes = [
     titulo: 'Top 5 productos',
     descripcion: 'Los 5 productos que generan más ganancia en las ventas de cada año.',
     ruta: '/api/reportes/top-productos',
+    porSucursal: true,
     paginado: true,
     filtros: [filtroAnioInicio, filtroAnioFin],
     validar: validarRangoAnios,
@@ -133,6 +137,7 @@ export const reportes = [
     titulo: 'Top 5 clientes',
     descripcion: 'Los 5 clientes con más facturas emitidas a su nombre en cada año, con el monto total facturado.',
     ruta: '/api/reportes/top-clientes',
+    porSucursal: true,
     paginado: true,
     filtros: [filtroAnioInicio, filtroAnioFin],
     validar: validarRangoAnios,
@@ -165,23 +170,17 @@ export const reportes = [
     titulo: 'Matriz por categoría',
     descripcion: 'Matriz resumen de las ventas de cada categoría de productos por año.',
     ruta: '/api/reportes/resumen-categorias',
+    porSucursal: true,
     paginado: false,
-    filtros: [],
-    columnas: [
-      { campo: 'StockGroupName', titulo: 'Categoría de productos' },
-      ...anios.map((anio) => ({
-        campo: anio.texto,
-        titulo: anio.texto,
-        alinear: 'right',
-        formato: dinero
-      }))
-    ]
+    filtros: []
+    // Sin "columnas": se arman con los años que vengan en los datos (ver ReporteGenerico)
   },
   {
     id: 'seguimiento-clientes',
     titulo: 'Seguimiento de clientes',
     descripcion: 'Resumen mensual de las compras de cada cliente: monto total, primera y última factura del mes, y cantidad total, mínima y máxima.',
     ruta: '/api/reportes/seguimiento-clientes',
+    porSucursal: true,
     paginado: true,
     filtros: [
       {
@@ -245,6 +244,7 @@ export const reportes = [
     titulo: 'Rotación de inventario',
     descripcion: 'Promedio de días de rotación del inventario de cada producto, a partir de las unidades vendidas y el inventario promedio.',
     ruta: '/api/reportes/rotacion-inventario',
+    porSucursal: true,
     paginado: true,
     filtros: [
       filtroProducto,
@@ -269,6 +269,7 @@ export const reportes = [
     titulo: 'Envío favorito',
     descripcion: 'Método de envío favorito según la ciudad a donde se remitió la venta, ordenado por la cantidad de ventas realizadas.',
     ruta: '/api/reportes/metodo-envio-favorito',
+    porSucursal: true,
     paginado: true,
     filtros: [
       filtroAnio,

@@ -17,19 +17,23 @@ function filtrosVacios(reporte) {
   return vacios;
 }
 
-// La matriz por categoría tiene una columna por año, así que sus columnas se arman con los datos
+// La matriz por categoría tiene una columna por año, así que sus columnas se arman con los datos.
+// JavaScript ordena primero las claves numéricas ("2013", "2014"...), por eso la categoría se pone de primera a mano.
 function columnasDinamicas(filas) {
   if (filas.length === 0) return [{ campo: 'vacio', titulo: 'Resultados' }];
 
-  return Object.keys(filas[0]).map((clave, indice) => ({
-    campo: clave,
-    titulo: indice === 0 ? 'Categoría de productos' : clave,
-    alinear: indice === 0 ? 'left' : 'right',
-    formato: indice === 0 ? undefined : dinero
-  }));
+  const claves = Object.keys(filas[0]);
+  const textos = claves.filter((clave) => isNaN(clave));
+  const anios = claves.filter((clave) => !isNaN(clave)).sort();
+
+  return [
+    ...textos.map((clave) => ({ campo: clave, titulo: 'Categoría de productos' })),
+    ...anios.map((clave) => ({ campo: clave, titulo: clave, alinear: 'right', formato: dinero }))
+  ];
 }
 
-function ReporteGenerico({ reporte }) {
+// sucursal: SanJose, Limon o (consolidado) Corte: cambia cuando se actualiza el resumen.
+function ReporteGenerico({ reporte, sucursal, corte }) {
   const [filtros, setFiltros] = useState(filtrosVacios(reporte));
   const [filtrosAplicados, setFiltrosAplicados] = useState(filtrosVacios(reporte));
   const [errores, setErrores] = useState({});
@@ -89,6 +93,11 @@ function ReporteGenerico({ reporte }) {
           parametros.cantidad = cantidad;
         }
 
+        // Solo los reportes de ventas se filtran por sucursal; vacío = consolidado
+        if (reporte.porSucursal) {
+          parametros.sucursal = sucursal;
+        }
+
         const respuesta = await pedir(reporte.ruta + armarQuery(parametros));
         setFilas(respuesta.datos);
       } catch (e) {
@@ -99,7 +108,7 @@ function ReporteGenerico({ reporte }) {
       }
     }
     cargarDatos();
-  }, [filtrosAplicados, pagina, cantidad, recarga]);
+  }, [filtrosAplicados, pagina, cantidad, recarga, sucursal, corte]);
 
   function aplicarFiltros() {
     const nuevosErrores = reporte.validar ? reporte.validar(filtros) : {};
