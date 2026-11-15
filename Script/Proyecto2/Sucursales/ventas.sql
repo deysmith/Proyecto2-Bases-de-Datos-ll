@@ -130,7 +130,7 @@ BEGIN
     bc.CustomerName as BillToCustomerName,
     f.DeliveryMethodID,
     me.DeliveryMethodName,
-    ISNULL(f.CustomerPurchaseOrderNumber, 'No posee número de orden') as CustomerPurchaseOrderNumber,
+    COALESCE(f.CustomerPurchaseOrderNumber, 'No posee número de orden') as CustomerPurchaseOrderNumber,
     f.ContactPersonID,
     p.FullName as ContactPerson,
     f.AccountsPersonID,
