@@ -1,0 +1,46 @@
+# Nodos Linux del Proyecto 2 - Wide World Importers distribuida
+# Corporativo: Ubuntu  |  Limón: Red Hat  |  San José: Windows (DESKTOP-8CTQSKC, nativo)
+
+services:
+  sqlcorporativo:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlcorporativo
+    hostname: sqlcorporativo
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+      MSSQL_AGENT_ENABLED: "true"
+      MSSQL_COLLATION: ${COLACION}
+    ports:
+      - "1440:1433"
+    volumes:
+      - datos_corporativo:/var/opt/mssql
+    networks:
+      - red_wwi
+    extra_hosts:
+      - "DESKTOP-8CTQSKC:host-gateway"
+
+  sqllimon:
+    image: mcr.microsoft.com/mssql/rhel/server:2022-latest
+    container_name: sqllimon
+    hostname: sqllimon
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD}
+      MSSQL_COLLATION: ${COLACION}
+    ports:
+      - "1441:1433"
+    volumes:
+      - datos_limon:/var/opt/mssql
+    networks:
+      - red_wwi
+
+volumes:
+  datos_corporativo:
+  datos_limon:
+
+networks:
+  red_wwi:
+    name: red_wwi
