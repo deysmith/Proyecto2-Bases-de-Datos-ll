@@ -42,7 +42,7 @@ function Estadisticas() {
     cargarEstado();
   }, []);
 
-  // Trae las facturas nuevas de las sucursales sin esperar al job de 5 minutos
+  // Trae las facturas nuevas de las sucursales sin esperar al job de 30 minutos
   async function actualizarAhora() {
     setActualizando(true);
     try {
@@ -87,7 +87,7 @@ function Estadisticas() {
       {/* Último corte de cada sucursal */}
       <Paper sx={{ p: 2, mb: 3 }}>
         <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-          Datos de las sucursales (se actualizan solos cada 5 minutos)
+          Datos de las sucursales (se actualizan solos cada 30 minutos)
         </Typography>
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
           {estado.map((fila) => (

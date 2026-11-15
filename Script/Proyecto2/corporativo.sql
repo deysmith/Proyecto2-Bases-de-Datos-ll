@@ -1186,7 +1186,7 @@ SELECT CONVERT(varchar(27), ValidFrom, 121) AS Version FROM Warehouse.StockItems
    SQL Server no permite vistas indexadas (vistas materializadas) sobre tablas
    de otros servidores. Se usa lo "similar": tablas resumen en el Corporativo con una
    copia de las ventas de las dos sucursales, que un job del SQL Server Agent refresca
-   cada 5 minutos (como un REFRESH MATERIALIZED VIEW).
+   cada 30 minutos (como un REFRESH MATERIALIZED VIEW).
 */
 USE WWI_Corporativo
 GO
@@ -1332,7 +1332,7 @@ GO
 
 /*
   ActualizarResumenVentas: refresca toda la vista materializada.
-  Lo ejecuta el job cada 5 minutos; también se puede llamar a mano
+  Lo ejecuta el job cada 30 minutos; también se puede llamar a mano
   (por ejemplo desde un botón "Actualizar" en las estadísticas).
   Si una sucursal falla, la otra se actualiza igual.
 */
@@ -1395,7 +1395,7 @@ EXEC dbo.ActualizarResumenVentas
 GO
 
 /*
-  Job del SQL Server Agent: refresca la vista materializada cada 5 minutos
+  Job del SQL Server Agent: refresca la vista materializada cada 30 minutos
 */
 USE msdb
 GO
@@ -1411,15 +1411,15 @@ EXEC dbo.sp_add_jobstep
   @command = N'EXEC dbo.ActualizarResumenVentas'
 
 EXEC dbo.sp_add_schedule
-  @schedule_name = N'Cada 5 minutos',
+  @schedule_name = N'Cada 30 minutos',
   @freq_type = 4, -- diario
   @freq_interval = 1, -- todos los días
   @freq_subday_type = 4, -- en minutos
-  @freq_subday_interval = 5 -- cada 5 minutos
+  @freq_subday_interval = 30 -- cada 30 minutos
 
 EXEC dbo.sp_attach_schedule
   @job_name = N'WWI - Actualizar resumen de ventas',
-  @schedule_name = N'Cada 5 minutos'
+  @schedule_name = N'Cada 30 minutos'
 
 EXEC dbo.sp_add_jobserver
   @job_name = N'WWI - Actualizar resumen de ventas'
