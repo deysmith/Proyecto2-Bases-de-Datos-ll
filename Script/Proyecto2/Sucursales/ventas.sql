@@ -224,6 +224,8 @@ BEGIN
   DECLARE @TaxRate decimal(18, 3)
   DECLARE @Tax decimal(18, 2)
   DECLARE @ExtendedPrice decimal(18, 2)
+  DECLARE @Disponible int
+  DECLARE @Mensaje nvarchar(200)
 
   BEGIN TRY
     BEGIN TRANSACTION
@@ -261,6 +263,24 @@ BEGIN
     IF @Cantidad <= 0
     BEGIN
       THROW 50025, 'La cantidad debe ser mayor que cero', 1
+    END
+
+    -- Se maneja la cantidad disponible en el inventario de la
+    -- sucursal antes de realizar una nueva factura. Y se valida
+    -- que no se vendan las mismas unidades dos veces.
+    SELECT @Disponible = QuantityOnHand
+    FROM inventario_productos WITH (UPDLOCK)
+    WHERE StockItemID = @ID_Producto
+
+    IF @Disponible IS NULL
+    BEGIN
+      THROW 50044, 'El producto no tiene inventario registrado en esta sucursal', 1
+    END
+
+    IF @Disponible < @Cantidad
+    BEGIN
+      SET @Mensaje = CONCAT('No hay suficiente inventario: en esta sucursal hay ', @Disponible, ' unidades disponibles');
+      THROW 50045, @Mensaje, 1
     END
 
     SELECT @PersonaEncargadaID = PersonID
@@ -343,6 +363,11 @@ BEGIN
     FROM productos p
     WHERE p.StockItemID = @ID_Producto
 
+    -- Se rebaja el inventario de la sucursal
+    UPDATE inventario_productos
+    SET QuantityOnHand = QuantityOnHand - @Cantidad
+    WHERE StockItemID = @ID_Producto
+
     COMMIT TRANSACTION
 
     SELECT @ID_Factura AS InvoiceID
@@ -402,6 +427,18 @@ BEGIN
       )
       BEGIN
         THROW 50026, 'La factura indicada no existe', 1
+      END
+
+      -- La factura solo se puede pasar a un cliente de esta sucursal
+      IF @ID_Cliente IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM clientes
+        WHERE CustomerID = @ID_Cliente
+        AND Sucursal = REPLACE(DB_NAME(), 'WWI_', '')
+      )
+
+      BEGIN
+        THROW 50043, 'El cliente no existe o pertenece a otra sucursal', 1
       END
 
       UPDATE facturas
@@ -479,6 +516,17 @@ BEGIN
         BEGIN
             THROW 50028, 'La factura no puede eliminarse porque está relacionada con transacciones de inventario.', 1
         END
+
+        -- Se devuelven al inventario de la sucursal las unidades de la factura
+        UPDATE ip
+        SET ip.QuantityOnHand = ip.QuantityOnHand + d.Total
+        FROM inventario_productos ip
+        INNER JOIN (
+          SELECT StockItemID, SUM(Quantity) AS Total
+          FROM detalle_factura
+          WHERE InvoiceID = @ID_Factura
+          GROUP BY StockItemID
+        ) d ON d.StockItemID = ip.StockItemID
 
         DELETE FROM detalle_factura
         WHERE InvoiceID = @ID_Factura

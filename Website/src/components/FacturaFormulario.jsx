@@ -281,7 +281,12 @@ function FacturaFormulario({ abierto, factura, alCerrar, alGuardar }) {
               value={valores.cantidad}
               onChange={(evento) => cambiar('cantidad', evento.target.value.replace(/\D/g, ''))}
               error={Boolean(errores.cantidad)}
-              helperText={errores.cantidad || 'El precio y el impuesto se toman del producto'}
+              helperText={
+                errores.cantidad ||
+                (valores.producto
+                  ? `Disponible en esta sucursal: ${valores.producto.QuantityOnHand ?? 0}`
+                  : 'El precio y el impuesto se toman del producto')
+              }
               slotProps={{ htmlInput: { inputMode: 'numeric', maxLength: 6 } }}
             />
           </Seccion>
